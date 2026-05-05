@@ -10,10 +10,9 @@ from typing import Optional
 import json
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
-app = FastAPI(title="LINE Delivery Backend")
+app = FastAPI(title="LINE Delivery Backend v2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,386 +21,227 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "")
+LINE_CHANNEL_SECRET       = os.environ.get("LINE_CHANNEL_SECRET", "")
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-LINE_API = "https://api.line.me/v2/bot"
-LIFF_ID = os.environ.get("LIFF_ID", "")
+LINE_API                  = "https://api.line.me/v2/bot"
+LIFF_ID                   = os.environ.get("LIFF_ID", "")
+SUPABASE_URL              = os.environ.get("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY      = os.environ.get("SUPABASE_SERVICE_KEY", "")   # service_role key (server-side only)
 
-def ensure_rich_menu():
-    """ตรวจสอบและสร้าง Rich Menu ให้มีลิงก์ LIFF ที่ถูกต้องเสมอ"""
-    if not LINE_CHANNEL_ACCESS_TOKEN or not LIFF_ID:
-        print("⚠️ ข้าม Rich Menu setup เพราะไม่มี LINE token หรือ LIFF_ID")
-        return
 
-    headers = {
-        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
-        "Content-Type": "application/json",
+# ── Supabase helpers ────────────────────────────────────────────────
+def sb_headers():
+    return {
+        "apikey":        SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type":  "application/json",
+        "Prefer":        "return=representation",
     }
 
-    # ดึง Rich Menu ทั้งหมด
-    res = httpx.get("https://api.line.me/v2/bot/richmenu/list", headers=headers)
-    menus = res.json().get("richmenus", [])
+async def sb_get(table: str, params: dict = None):
+    """GET from Supabase REST API"""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return []
+    query = "&".join(f"{k}={v}" for k, v in (params or {}).items())
+    url = f"{SUPABASE_URL}/rest/v1/{table}{'?' + query if query else ''}"
+    async with httpx.AsyncClient() as c:
+        res = await c.get(url, headers=sb_headers())
+        return res.json() if res.status_code == 200 else []
 
-    # ตรวจสอบว่ามี Menu ที่มีลิงก์ตรงกับ LIFF ปัจจุบันหรือไม่
-    current_order_url = f"https://liff.line.me/{LIFF_ID}?mode=order"
-    current_merchant_url = f"https://liff.line.me/{LIFF_ID}?mode=merchant"
-
-    menu_ok = False
-    for menu in menus:
-        areas = menu.get("areas", [])
-        if len(areas) >= 2:
-            # ตรวจสอบว่า area สั่งสินค้ากับร้านค้าตรงกับ URL ปัจจุบัน
-            action1 = areas[0].get("action", {})
-            action2 = areas[1].get("action", {})
-            if (action1.get("uri") == current_order_url and 
-                action2.get("uri") == current_merchant_url):
-                menu_ok = True
-                print(f"✅ Rich Menu เดิมถูกต้องแล้ว (ID: {menu['richMenuId']})")
-                break
-
-
-    # ถ้าไม่ถูกต้อง -> ลบทั้งหมดแล้วสร้างใหม่
-    print("🔄 Rich Menu ไม่ตรง/ไม่มี -> สร้างใหม่...")
-    for menu in menus:
-        httpx.delete(
-            f"https://api.line.me/v2/bot/richmenu/{menu['richMenuId']}",
-            headers=headers
-        )
-
-    # สร้าง Rich Menu ใหม่
-    payload = {
-        "size": {"width": 2500, "height": 843},
-        "selected": True,
-        "name": "Delivery Menu",
-        "chatBarText": "เมนู",
-        "areas": [
-            {
-                "bounds": {"x": 0, "y": 0, "width": 1250, "height": 843},
-                "action": {"type": "uri", "label": "สั่งสินค้า", "uri": current_order_url}
-            },
-            {
-                "bounds": {"x": 1250, "y": 0, "width": 1250, "height": 843},
-                "action": {"type": "uri", "label": "หน้าร้านค้า", "uri": current_merchant_url}
-            }
-        ]
-    }
-    res = httpx.post("https://api.line.me/v2/bot/richmenu", headers=headers, json=payload)
-    if res.status_code != 200:
-        print(f"❌ สร้าง Rich Menu ไม่สำเร็จ: {res.text}")
-        return
-    rich_menu_id = res.json()["richMenuId"]
-
-    # อัปโหลดรูป (ถ้ามีไฟล์ rich_menu.png ในโฟลเดอร์เดียวกับ main.py)
-    image_path = "rich_menu.png"
-    if os.path.exists(image_path):
-        with open(image_path, "rb") as f:
-            httpx.post(
-                f"https://api-data.line.me/v2/bot/richmenu/{rich_menu_id}/content",
-                headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "image/png"},
-                content=f.read()
-            )
-        print("🖼️ อัปโหลดรูป Rich Menu แล้ว")
-
-    # ตั้งเป็น Default
-    httpx.delete(
-    "https://api.line.me/v2/bot/user/all/richmenu",
-    headers=headers
-)
-    httpx.post(
-        f"https://api.line.me/v2/bot/user/all/richmenu/{rich_menu_id}",
-        headers=headers
-    )
-    print(f"✅ Rich Menu พร้อมใช้งาน (ID: {rich_menu_id})")
-# ---- In-memory store ----
-orders: dict = {}
+async def sb_patch(table: str, match: dict, data: dict):
+    """PATCH a row in Supabase"""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return None
+    query = "&".join(f"{k}=eq.{v}" for k, v in match.items())
+    url = f"{SUPABASE_URL}/rest/v1/{table}?{query}"
+    async with httpx.AsyncClient() as c:
+        res = await c.patch(url, headers=sb_headers(), json=data)
+        return res.json()
 
 
-# ---- Models ----
-class Order(BaseModel):
-    user_id: str
-    items: list[str]
-    lat: float
-    lng: float
-    address: str
-    note: Optional[str] = ""
-
-
-class StatusUpdate(BaseModel):
-    status: str
-
-
-# ---- Helpers ----
+# ── LINE Helpers ────────────────────────────────────────────────────
 def verify_line_signature(body: bytes, signature: str) -> bool:
-    """ตรวจสอบว่า webhook มาจาก LINE จริง"""
-    # FIX: ใช้ hmac.new() ถูกต้อง และไม่ใช้ชื่อตัวแปร 'hash' ที่ทับ built-in
     mac = hmac.new(
         LINE_CHANNEL_SECRET.encode("utf-8"),
         body,
         hashlib.sha256
     ).digest()
-    expected = base64.b64encode(mac).decode("utf-8")
-    return hmac.compare_digest(expected, signature)
+    return hmac.compare_digest(base64.b64encode(mac).decode("utf-8"), signature)
 
 
-async def push_message(user_id: str, text: str):
-    """ส่ง Push Message หา user"""
+async def push_message(user_id: str, messages: list):
+    """ส่ง Push Message (รับ list of message objects)"""
     if not LINE_CHANNEL_ACCESS_TOKEN:
-        print(f"[push_message] No token — would send to {user_id}: {text}")
+        print(f"[push] No token — {user_id}: {messages}")
         return 200
-
-    headers = {
-        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "to": user_id,
-        "messages": [{"type": "text", "text": text}],
-    }
-    async with httpx.AsyncClient() as client:
-        res = await client.post(f"{LINE_API}/message/push", json=payload, headers=headers)
+    headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient() as c:
+        res = await c.post(f"{LINE_API}/message/push", json={"to": user_id, "messages": messages}, headers=headers)
         if res.status_code != 200:
-            print(f"[push_message] Error {res.status_code}: {res.text}")
+            print(f"[push] Error {res.status_code}: {res.text}")
         return res.status_code
 
 
 async def reply_message(reply_token: str, messages: list):
-    """Reply กลับไปหา user ด้วย reply token"""
     if not LINE_CHANNEL_ACCESS_TOKEN:
-        print(f"[reply_message] No token — would reply: {messages}")
+        print(f"[reply] No token: {messages}")
         return 200
-
-    headers = {
-        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    payload = {"replyToken": reply_token, "messages": messages}
-    async with httpx.AsyncClient() as client:
-        res = await client.post(f"{LINE_API}/message/reply", json=payload, headers=headers)
-        if res.status_code != 200:
-            print(f"[reply_message] Error {res.status_code}: {res.text}")
+    headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient() as c:
+        res = await c.post(f"{LINE_API}/message/reply", json={"replyToken": reply_token, "messages": messages}, headers=headers)
         return res.status_code
 
 
-def make_order_button(label="สั่งสินค้า"):
-    """Flex Message ปุ่มสั่งสินค้า → เปิด LIFF"""
-    liff_url = f"https://liff.line.me/{LIFF_ID}?mode=order" if LIFF_ID else "https://example.com"
+# ── Flex Message builders ───────────────────────────────────────────
+def liff_url(mode="order"):
+    base = f"https://liff.line.me/{LIFF_ID}" if LIFF_ID else "https://example.com"
+    return f"{base}?mode={mode}"
+
+
+def make_order_confirmed_flex(order: dict) -> dict:
+    """Flex แจ้งลูกค้าว่ารับออเดอร์แล้ว"""
+    items_text = ", ".join(order.get("items", []))
+    total = order.get("total_price", 0)
+    short_id = str(order.get("order_id", ""))[-6:].upper()
+    payment_map = {"cash": "💵 เงินสด", "transfer": "🏦 โอนเงิน", "promptpay": "📱 PromptPay"}
+    payment_label = payment_map.get(order.get("payment_method", "cash"), "💵 เงินสด")
+
+    return {
+        "type": "flex",
+        "altText": f"✅ รับออเดอร์ #{short_id} แล้ว!",
+        "contents": {
+            "type": "bubble",
+            "header": {
+                "type": "box", "layout": "vertical",
+                "backgroundColor": "#4CAF50", "paddingAll": "16px",
+                "contents": [
+                    {"type": "text", "text": "✅ รับออเดอร์แล้ว!", "color": "#ffffff", "weight": "bold", "size": "xl"},
+                    {"type": "text", "text": f"เลขออเดอร์ #{short_id}", "color": "#c8f7c5", "size": "sm", "margin": "sm"},
+                ]
+            },
+            "body": {
+                "type": "box", "layout": "vertical", "paddingAll": "16px",
+                "contents": [
+                    {"type": "text", "text": "รายการอาหาร", "weight": "bold", "color": "#555555", "size": "sm"},
+                    {"type": "text", "text": items_text, "size": "sm", "color": "#333333", "wrap": True, "margin": "sm"},
+                    {"type": "separator", "margin": "md"},
+                    {
+                        "type": "box", "layout": "horizontal", "margin": "md",
+                        "contents": [
+                            {"type": "text", "text": "ยอดรวม", "size": "sm", "color": "#888888", "flex": 3},
+                            {"type": "text", "text": f"{total}฿", "size": "sm", "weight": "bold", "flex": 2, "align": "end"},
+                        ]
+                    },
+                    {
+                        "type": "box", "layout": "horizontal", "margin": "xs",
+                        "contents": [
+                            {"type": "text", "text": "ชำระเงิน", "size": "sm", "color": "#888888", "flex": 3},
+                            {"type": "text", "text": payment_label, "size": "sm", "flex": 2, "align": "end"},
+                        ]
+                    },
+                    {
+                        "type": "box", "layout": "horizontal", "margin": "xs",
+                        "contents": [
+                            {"type": "text", "text": "ที่อยู่", "size": "sm", "color": "#888888", "flex": 3},
+                            {"type": "text", "text": order.get("address", ""), "size": "sm", "flex": 4, "wrap": True, "align": "end"},
+                        ]
+                    },
+                ]
+            },
+            "footer": {
+                "type": "box", "layout": "vertical", "paddingAll": "12px",
+                "contents": [{
+                    "type": "button", "style": "primary", "color": "#1E88E5",
+                    "action": {"type": "uri", "label": "📦 ติดตามออเดอร์", "uri": liff_url("order")}
+                }]
+            }
+        }
+    }
+
+
+def make_status_update_flex(order_id: str, status: str, items_text: str = "") -> dict:
+    STATUS_COLOR = {"รอร้านยืนยัน": "#ff9800", "กำลังทำ": "#2196f3", "กำลังจัดส่ง": "#9c27b0", "ส่งสำเร็จ": "#4caf50"}
+    STATUS_ICON  = {"รอร้านยืนยัน": "⏳", "กำลังทำ": "👨‍🍳", "กำลังจัดส่ง": "🛵", "ส่งสำเร็จ": "✅"}
+    STATUS_MSG   = {
+        "รอร้านยืนยัน": "ร้านค้ากำลังตรวจสอบออเดอร์ของคุณ",
+        "กำลังทำ":      "ร้านกำลังเตรียมอาหาร รอสักครู่นะคะ 🍳",
+        "กำลังจัดส่ง": "พนักงานกำลังนำส่งถึงที่อยู่คุณ 🛵",
+        "ส่งสำเร็จ":   "ได้รับสินค้าแล้ว! ขอบคุณที่ใช้บริการ 😊",
+    }
+    color = STATUS_COLOR.get(status, "#888888")
+    icon  = STATUS_ICON.get(status, "📦")
+    msg   = STATUS_MSG.get(status, "")
+    short_id = str(order_id)[-6:].upper()
+
+    return {
+        "type": "flex",
+        "altText": f"{icon} ออเดอร์ #{short_id}: {status}",
+        "contents": {
+            "type": "bubble",
+            "header": {
+                "type": "box", "layout": "vertical",
+                "backgroundColor": color, "paddingAll": "14px",
+                "contents": [
+                    {"type": "text", "text": f"{icon} {status}", "color": "#ffffff", "weight": "bold", "size": "lg"},
+                    {"type": "text", "text": f"ออเดอร์ #{short_id}", "color": "#ffffffcc", "size": "xs", "margin": "xs"},
+                ]
+            },
+            "body": {
+                "type": "box", "layout": "vertical", "paddingAll": "14px",
+                "contents": [
+                    {"type": "text", "text": msg, "size": "sm", "color": "#444444", "wrap": True},
+                    *(
+                        [{"type": "text", "text": items_text, "size": "xs", "color": "#888888", "margin": "sm", "wrap": True}]
+                        if items_text else []
+                    )
+                ]
+            },
+            "footer": {
+                "type": "box", "layout": "vertical", "paddingAll": "10px",
+                "contents": [{
+                    "type": "button", "style": "link", "height": "sm",
+                    "action": {"type": "uri", "label": "ดูรายละเอียด", "uri": liff_url("order")}
+                }]
+            }
+        }
+    }
+
+
+def make_order_button_flex(label="สั่งสินค้า"):
     return {
         "type": "flex",
         "altText": "กดปุ่มเพื่อสั่งสินค้า",
         "contents": {
             "type": "bubble",
-            "body": {
-                "type": "box",
-                "layout": "vertical",
+            "hero": {
+                "type": "box", "layout": "vertical",
+                "backgroundColor": "#1565C0", "paddingAll": "20px",
                 "contents": [
-                    {"type": "text", "text": "🛵 สั่งสินค้า", "weight": "bold", "size": "xl"},
-                    {"type": "text", "text": "กดปุ่มด้านล่างเพื่อเลือกเมนูและระบุที่อยู่", "size": "sm", "color": "#888888", "margin": "sm"},
+                    {"type": "text", "text": "🛵 Delivery", "color": "#ffffff", "weight": "bold", "size": "xxl"},
+                    {"type": "text", "text": "อาหารสดใหม่ ส่งถึงบ้าน", "color": "#90CAF9", "size": "sm", "margin": "sm"},
                 ]
             },
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "contents": [{
-                    "type": "button",
-                    "style": "primary",
-                    "color": "#06C755",
-                    "action": {"type": "uri", "label": label, "uri": liff_url}
-                }]
-            }
-        }
-    }
-
-
-def make_merchant_button():
-    """ปุ่มเข้าหน้า dashboard ร้านค้า"""
-    merchant_url = f"https://liff.line.me/{LIFF_ID}?mode=merchant" if LIFF_ID else "https://example.com"
-    return {
-        "type": "flex",
-        "altText": "เปิดหน้าจัดการออเดอร์",
-        "contents": {
-            "type": "bubble",
             "body": {
-                "type": "box",
-                "layout": "vertical",
+                "type": "box", "layout": "vertical", "paddingAll": "16px",
                 "contents": [
-                    {"type": "text", "text": "📋 จัดการออเดอร์", "weight": "bold", "size": "xl"},
-                    {"type": "text", "text": "ดูและอัปเดตสถานะออเดอร์ทั้งหมด", "size": "sm", "color": "#888888", "margin": "sm"},
-                ]
-            },
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "contents": [{
-                    "type": "button",
-                    "style": "primary",
-                    "color": "#2196f3",
-                    "action": {"type": "uri", "label": "เปิดหน้าออเดอร์", "uri": merchant_url}
-                }]
-            }
-        }
-    }
-
-
-def make_order_status_flex(order: dict) -> dict:
-    """Flex Message แสดงสถานะออเดอร์แบบสวยงาม"""
-    STATUS_COLOR = {
-        "รอร้านยืนยัน": "#ff9800",
-        "กำลังทำ": "#2196f3",
-        "กำลังจัดส่ง": "#9c27b0",
-        "ส่งสำเร็จ": "#4caf50",
-    }
-    STATUS_ICON = {
-        "รอร้านยืนยัน": "⏳",
-        "กำลังทำ": "👨‍🍳",
-        "กำลังจัดส่ง": "🛵",
-        "ส่งสำเร็จ": "✅",
-    }
-    status = order["status"]
-    color = STATUS_COLOR.get(status, "#888888")
-    icon = STATUS_ICON.get(status, "📦")
-    items_text = ", ".join(order["items"])
-
-    return {
-        "type": "flex",
-        "altText": f"อัปเดตออเดอร์ #{order['order_id']}: {status}",
-        "contents": {
-            "type": "bubble",
-            "header": {
-                "type": "box",
-                "layout": "vertical",
-                "backgroundColor": color,
-                "contents": [{
-                    "type": "text",
-                    "text": f"{icon} {status}",
-                    "color": "#ffffff",
-                    "weight": "bold",
-                    "size": "lg"
-                }]
-            },
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "contents": [
-                    {"type": "text", "text": f"ออเดอร์ #{order['order_id']}", "weight": "bold", "size": "md"},
-                    {"type": "text", "text": items_text, "size": "sm", "color": "#555555", "margin": "sm", "wrap": True},
-                    {"type": "separator", "margin": "md"},
                     {
-                        "type": "box", "layout": "horizontal", "margin": "md",
+                        "type": "box", "layout": "horizontal",
                         "contents": [
-                            {"type": "text", "text": "ที่อยู่", "size": "sm", "color": "#888888", "flex": 2},
-                            {"type": "text", "text": order.get("address", ""), "size": "sm", "flex": 5, "wrap": True},
+                            {"type": "text", "text": "⚡ ส่งไวทันใจ", "size": "xs", "color": "#555555", "flex": 1},
+                            {"type": "text", "text": "🎁 ฟรีค่าส่ง 150฿+", "size": "xs", "color": "#555555", "flex": 1},
                         ]
                     }
                 ]
+            },
+            "footer": {
+                "type": "box", "layout": "vertical", "paddingAll": "10px",
+                "contents": [{
+                    "type": "button", "style": "primary", "color": "#1E88E5", "height": "md",
+                    "action": {"type": "uri", "label": label, "uri": liff_url("order")}
+                }]
             }
         }
     }
-
-
-# ---- Routes ----
-@app.get("/")
-def root():
-    return {"status": "LINE Delivery API running", "liff_id": LIFF_ID or "not set"}
-
-@app.on_event("startup")
-async def startup_event():
-    ensure_rich_menu()
-
-@app.get("/health")
-def health():
-    token_ok = bool(LINE_CHANNEL_ACCESS_TOKEN)
-    secret_ok = bool(LINE_CHANNEL_SECRET)
-    liff_ok = bool(LIFF_ID)
-    return {
-        "ok": True,
-        "token": token_ok,
-        "secret": secret_ok,
-        "liff": liff_ok,
-        "orders_count": len(orders)
-    }
-
-
-@app.post("/webhook")
-async def webhook(request: Request):
-    """รับ event จาก LINE"""
-    body = await request.body()
-    signature = request.headers.get("X-Line-Signature", "")
-
-    # ตรวจ signature เฉพาะตอนที่มี secret (ถ้าว่างให้ผ่าน สำหรับ dev)
-    if LINE_CHANNEL_SECRET:
-        if not signature:
-            raise HTTPException(status_code=400, detail="Missing X-Line-Signature header")
-        if not verify_line_signature(body, signature):
-            raise HTTPException(status_code=400, detail="Invalid signature")
-    else:
-        print("[webhook] WARNING: LINE_CHANNEL_SECRET not set, skipping signature check")
-
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
-
-    events = data.get("events", [])
-
-    for event in events:
-        event_type = event.get("type")
-        reply_token = event.get("replyToken")
-        user_id = event.get("source", {}).get("userId", "")
-
-        # ลูกค้า Follow OA ครั้งแรก
-        if event_type == "follow":
-            await reply_message(reply_token, [
-                {"type": "text", "text": "ยินดีต้อนรับครับ! 🎉\nกดปุ่มด้านล่างเพื่อเริ่มสั่งสินค้าได้เลย"},
-                make_order_button("สั่งสินค้าเลย"),
-            ])
-
-        # รับข้อความจากลูกค้า
-        elif event_type == "message":
-            msg_type = event.get("message", {}).get("type", "")
-
-            if msg_type != "text":
-                # รับรูปภาพหรืออื่นๆ
-                await reply_message(reply_token, [{
-                    "type": "text",
-                    "text": "สวัสดีครับ! กดปุ่มด้านล่างเพื่อสั่งสินค้าได้เลย 👇",
-                    "quickReply": {"items": _quick_reply_items()}
-                }])
-                continue
-
-            text = event.get("message", {}).get("text", "").strip()
-
-            if text in ["สั่งสินค้า", "สั่งอาหาร", "order", "สั่ง", "เมนู", "menu"]:
-                await reply_message(reply_token, [make_order_button()])
-
-            elif text in ["ร้านค้า", "merchant", "dashboard", "จัดการ", "admin"]:
-                await reply_message(reply_token, [make_merchant_button()])
-
-            elif text in ["สถานะ", "status", "ออเดอร์ฉัน", "เช็คออเดอร์"]:
-                user_orders = [o for o in orders.values() if o["user_id"] == user_id]
-                if user_orders:
-                    last = user_orders[-1]
-                    await reply_message(reply_token, [make_order_status_flex(last)])
-                else:
-                    await reply_message(reply_token, [
-                        {"type": "text", "text": "ยังไม่มีออเดอร์ครับ กดสั่งสินค้าได้เลย 😊"},
-                        make_order_button(),
-                    ])
-
-            elif text in ["ช่วยเหลือ", "help", "?", "วิธีใช้"]:
-                await reply_message(reply_token, [{
-                    "type": "text",
-                    "text": "คำสั่งที่ใช้ได้ครับ 👇",
-                    "quickReply": {"items": _quick_reply_items()}
-                }])
-
-            else:
-                await reply_message(reply_token, [{
-                    "type": "text",
-                    "text": "สวัสดีครับ! 😊 กดปุ่มด้านล่างเพื่อสั่งสินค้าได้เลย",
-                    "quickReply": {"items": _quick_reply_items()}
-                }])
-
-    return {"status": "ok"}
 
 
 def _quick_reply_items():
@@ -409,59 +249,250 @@ def _quick_reply_items():
         {"type": "action", "action": {"type": "message", "label": "🛵 สั่งสินค้า", "text": "สั่งสินค้า"}},
         {"type": "action", "action": {"type": "message", "label": "📦 เช็คสถานะ", "text": "สถานะ"}},
         {"type": "action", "action": {"type": "message", "label": "🏪 หน้าร้านค้า", "text": "ร้านค้า"}},
-        {"type": "action", "action": {"type": "message", "label": "❓ ช่วยเหลือ", "text": "ช่วยเหลือ"}},
+        {"type": "action", "action": {"type": "message", "label": "❓ ช่วยเหลือ",   "text": "ช่วยเหลือ"}},
     ]
+
+
+# ── Rich Menu ───────────────────────────────────────────────────────
+def ensure_rich_menu():
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LIFF_ID:
+        print("⚠️ ข้าม Rich Menu (ไม่มี token หรือ LIFF_ID)")
+        return
+
+    headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}
+    current_order_url    = liff_url("order")
+    current_merchant_url = liff_url("merchant")
+
+    res   = httpx.get("https://api.line.me/v2/bot/richmenu/list", headers=headers)
+    menus = res.json().get("richmenus", [])
+
+    for menu in menus:
+        areas = menu.get("areas", [])
+        if len(areas) >= 2:
+            if (areas[0].get("action", {}).get("uri") == current_order_url and
+                areas[1].get("action", {}).get("uri") == current_merchant_url):
+                print(f"✅ Rich Menu OK (ID: {menu['richMenuId']})")
+                return
+
+    print("🔄 สร้าง Rich Menu ใหม่...")
+    for menu in menus:
+        httpx.delete(f"https://api.line.me/v2/bot/richmenu/{menu['richMenuId']}", headers=headers)
+
+    payload = {
+        "size": {"width": 2500, "height": 843},
+        "selected": True,
+        "name": "Delivery Menu v2",
+        "chatBarText": "เมนู 🛵",
+        "areas": [
+            {"bounds": {"x": 0,    "y": 0, "width": 1250, "height": 843}, "action": {"type": "uri", "label": "สั่งสินค้า",   "uri": current_order_url}},
+            {"bounds": {"x": 1250, "y": 0, "width": 1250, "height": 843}, "action": {"type": "uri", "label": "หน้าร้านค้า", "uri": current_merchant_url}},
+        ]
+    }
+    res = httpx.post("https://api.line.me/v2/bot/richmenu", headers=headers, json=payload)
+    if res.status_code != 200:
+        print(f"❌ สร้าง Rich Menu ไม่สำเร็จ: {res.text}")
+        return
+    rid = res.json()["richMenuId"]
+
+    image_path = "rich_menu.png"
+    if os.path.exists(image_path):
+        with open(image_path, "rb") as f:
+            httpx.post(
+                f"https://api-data.line.me/v2/bot/richmenu/{rid}/content",
+                headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "image/png"},
+                content=f.read()
+            )
+
+    httpx.delete("https://api.line.me/v2/bot/user/all/richmenu", headers=headers)
+    httpx.post(f"https://api.line.me/v2/bot/user/all/richmenu/{rid}", headers=headers)
+    print(f"✅ Rich Menu พร้อม (ID: {rid})")
+
+
+# ── Models ──────────────────────────────────────────────────────────
+class Order(BaseModel):
+    order_id:       Optional[str] = None
+    user_id:        str
+    items:          list[str]
+    lat:            float
+    lng:            float
+    address:        str
+    note:           Optional[str]   = ""
+    total_price:    Optional[float] = 0
+    payment_method: Optional[str]   = "cash"
+
+
+class StatusUpdate(BaseModel):
+    status:  str
+    user_id: Optional[str] = None
+
+
+# ── Startup ──────────────────────────────────────────────────────────
+@app.on_event("startup")
+async def startup_event():
+    ensure_rich_menu()
+
+
+# ── Routes ───────────────────────────────────────────────────────────
+@app.get("/")
+def root():
+    return {"status": "LINE Delivery API v2", "liff_id": LIFF_ID or "not set", "supabase": bool(SUPABASE_URL)}
+
+
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "line_token": bool(LINE_CHANNEL_ACCESS_TOKEN),
+        "line_secret": bool(LINE_CHANNEL_SECRET),
+        "liff": bool(LIFF_ID),
+        "supabase": bool(SUPABASE_URL and SUPABASE_SERVICE_KEY),
+    }
+
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    body      = await request.body()
+    signature = request.headers.get("X-Line-Signature", "")
+
+    if LINE_CHANNEL_SECRET:
+        if not signature or not verify_line_signature(body, signature):
+            raise HTTPException(status_code=400, detail="Invalid signature")
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    for event in data.get("events", []):
+        event_type  = event.get("type")
+        reply_token = event.get("replyToken")
+        user_id     = event.get("source", {}).get("userId", "")
+
+        if event_type == "follow":
+            await reply_message(reply_token, [
+                {
+                    "type": "text",
+                    "text": "ยินดีต้อนรับครับ! 🎉\nกดปุ่มด้านล่างเพื่อสั่งสินค้าได้เลย\n\n⭐ สะสมแต้มทุกคำสั่งซื้อ\n🎁 ฟรีค่าส่งเมื่อสั่ง 150฿+",
+                },
+                make_order_button_flex("สั่งสินค้าเลย 🛵"),
+            ])
+
+        elif event_type == "message":
+            if event.get("message", {}).get("type") != "text":
+                await reply_message(reply_token, [{
+                    "type": "text",
+                    "text": "สวัสดีครับ! กดเลือกได้เลย 👇",
+                    "quickReply": {"items": _quick_reply_items()}
+                }])
+                continue
+
+            text = event.get("message", {}).get("text", "").strip().lower()
+
+            if any(w in text for w in ["สั่งสินค้า", "สั่งอาหาร", "order", "สั่ง", "เมนู", "menu"]):
+                await reply_message(reply_token, [make_order_button_flex()])
+
+            elif any(w in text for w in ["ร้านค้า", "merchant", "dashboard", "จัดการ", "admin"]):
+                await reply_message(reply_token, [{
+                    "type": "flex",
+                    "altText": "เปิดหน้าร้านค้า",
+                    "contents": {
+                        "type": "bubble",
+                        "body": {"type": "box", "layout": "vertical", "contents": [
+                            {"type": "text", "text": "📋 จัดการออเดอร์", "weight": "bold", "size": "xl"},
+                            {"type": "text", "text": "ดู/อัปเดตออเดอร์ · จัดการเมนู · สถิติ", "size": "sm", "color": "#888888", "margin": "sm"},
+                        ]},
+                        "footer": {"type": "box", "layout": "vertical", "contents": [{
+                            "type": "button", "style": "primary", "color": "#5C6BC0",
+                            "action": {"type": "uri", "label": "เปิดหน้าร้านค้า", "uri": liff_url("merchant")}
+                        }]}
+                    }
+                }])
+
+            elif any(w in text for w in ["สถานะ", "status", "ออเดอร์ฉัน", "เช็คออเดอร์"]):
+                # ดึงออเดอร์ล่าสุดจาก Supabase
+                rows = await sb_get("orders", {"user_id": f"eq.{user_id}", "order": "created_at.desc", "limit": "1"})
+                if rows:
+                    order = rows[0]
+                    short_id = str(order["id"])[-6:].upper()
+                    await reply_message(reply_token, [
+                        make_status_update_flex(order["id"], order["status"], ", ".join(order.get("items", [])))
+                    ])
+                else:
+                    await reply_message(reply_token, [
+                        {"type": "text", "text": "ยังไม่มีออเดอร์ครับ สั่งได้เลย 😊"},
+                        make_order_button_flex(),
+                    ])
+
+            elif any(w in text for w in ["ช่วยเหลือ", "help", "วิธีใช้"]):
+                await reply_message(reply_token, [{
+                    "type": "text",
+                    "text": "🛵 Delivery — คำสั่งที่ใช้ได้\n\n• สั่งสินค้า — เปิดเมนู\n• สถานะ — เช็คออเดอร์\n• ร้านค้า — หน้าจัดการ\n• ช่วยเหลือ — เมนูนี้",
+                    "quickReply": {"items": _quick_reply_items()}
+                }])
+
+            else:
+                await reply_message(reply_token, [{
+                    "type": "text",
+                    "text": "สวัสดีครับ! 😊",
+                    "quickReply": {"items": _quick_reply_items()}
+                }])
+
+    return {"status": "ok"}
 
 
 @app.post("/orders")
 async def create_order(order: Order):
-    """รับออเดอร์จาก LIFF app"""
-    order_id = f"ORD-{len(orders)+1:04d}"
-    orders[order_id] = {
-        **order.model_dump(),
-        "order_id": order_id,
-        "status": "รอร้านยืนยัน",
-    }
+    """รับ notify จาก frontend หลัง insert Supabase แล้ว — ส่ง LINE push เท่านั้น"""
+    short_id = str(order.order_id or "")[-6:].upper() if order.order_id else "NEW"
 
-    # แจ้งลูกค้าทันทีด้วย Flex Message
-    await push_message(order.user_id, (
-        f"✅ รับออเดอร์แล้วครับ!\n"
-        f"เลขออเดอร์: #{order_id}\n"
-        f"สินค้า: {', '.join(order.items)}\n"
-        f"ที่อยู่: {order.address}\n"
-        f"สถานะ: รอร้านยืนยัน ⏳\n\n"
-        f"ร้านค้าจะแจ้งเตือนเมื่อสถานะเปลี่ยนครับ"
-    ))
-
-    return {"order_id": order_id, "status": "created"}
-
-
-@app.get("/orders/{order_id}")
-def get_order(order_id: str):
-    if order_id not in orders:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return orders[order_id]
+    await push_message(order.user_id, [
+        make_order_confirmed_flex({
+            "order_id":      short_id,
+            "items":         order.items,
+            "total_price":   order.total_price,
+            "payment_method": order.payment_method,
+            "address":       order.address,
+        })
+    ])
+    return {"status": "notified", "order_id": order.order_id}
 
 
 @app.patch("/orders/{order_id}/status")
 async def update_status(order_id: str, body: StatusUpdate):
-    """ร้านค้าอัปเดตสถานะออเดอร์"""
-    if order_id not in orders:
-        raise HTTPException(status_code=404, detail="Order not found")
+    """อัปเดต status ใน Supabase + ส่ง LINE push"""
+    # Update Supabase (ถ้ามี service key)
+    if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        await sb_patch("orders", {"id": order_id}, {"status": body.status})
 
-    orders[order_id]["status"] = body.status
-    user_id = orders[order_id]["user_id"]
+    # ดึง user_id + items จาก Supabase ถ้าไม่ได้ส่งมา
+    user_id     = body.user_id
+    items_text  = ""
 
-    # ส่ง Flex Message แจ้งลูกค้า
-    await push_message(user_id, (
-        f"📢 อัปเดตออเดอร์ #{order_id}\n"
-        f"สถานะใหม่: {body.status}"
-    ))
+    if not user_id and SUPABASE_URL:
+        rows = await sb_get("orders", {"id": f"eq.{order_id}"})
+        if rows:
+            user_id    = rows[0].get("user_id")
+            items_list = rows[0].get("items", [])
+            items_text = ", ".join(items_list) if isinstance(items_list, list) else ""
+
+    if user_id:
+        await push_message(user_id, [
+            make_status_update_flex(order_id, body.status, items_text)
+        ])
 
     return {"order_id": order_id, "status": body.status}
 
 
 @app.get("/orders")
-def list_orders():
-    """ดูออเดอร์ทั้งหมด (สำหรับร้านค้า)"""
-    return list(orders.values())
+async def list_orders():
+    """ดูออเดอร์ทั้งหมดจาก Supabase"""
+    rows = await sb_get("orders", {"order": "created_at.desc", "limit": "200"})
+    return rows if rows else []
+
+
+@app.get("/orders/{order_id}")
+async def get_order(order_id: str):
+    rows = await sb_get("orders", {"id": f"eq.{order_id}"})
+    if not rows:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return rows[0]
