@@ -21,7 +21,7 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
-LIFF_URL = f"https://liff.line.me/{LIFF_ID}"
+LIFF_URL = f"https://liff.line.me/{LIFF_ID}?mode=order"
 LIFF_MERCHANT_URL = f"https://liff.line.me/{LIFF_ID}?mode=merchant"
 
 
