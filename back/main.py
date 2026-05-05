@@ -10,6 +10,7 @@ from typing import Optional
 import json
 from dotenv import load_dotenv
 
+
 load_dotenv()
 
 app = FastAPI(title="LINE Delivery Backend")
@@ -26,6 +27,89 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_API = "https://api.line.me/v2/bot"
 LIFF_ID = os.environ.get("LIFF_ID", "")
 
+def ensure_rich_menu():
+    """ตรวจสอบและสร้าง Rich Menu ให้มีลิงก์ LIFF ที่ถูกต้องเสมอ"""
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LIFF_ID:
+        print("⚠️ ข้าม Rich Menu setup เพราะไม่มี LINE token หรือ LIFF_ID")
+        return
+
+    headers = {
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    # ดึง Rich Menu ทั้งหมด
+    res = httpx.get("https://api.line.me/v2/bot/richmenu/list", headers=headers)
+    menus = res.json().get("richmenus", [])
+
+    # ตรวจสอบว่ามี Menu ที่มีลิงก์ตรงกับ LIFF ปัจจุบันหรือไม่
+    current_order_url = f"https://liff.line.me/{LIFF_ID}?mode=order"
+    current_merchant_url = f"https://liff.line.me/{LIFF_ID}?mode=merchant"
+
+    menu_ok = False
+    for menu in menus:
+        areas = menu.get("areas", [])
+        if len(areas) >= 2:
+            # ตรวจสอบว่า area สั่งสินค้ากับร้านค้าตรงกับ URL ปัจจุบัน
+            action1 = areas[0].get("action", {})
+            action2 = areas[1].get("action", {})
+            if (action1.get("uri") == current_order_url and 
+                action2.get("uri") == current_merchant_url):
+                menu_ok = True
+                print(f"✅ Rich Menu เดิมถูกต้องแล้ว (ID: {menu['richMenuId']})")
+                break
+
+    if menu_ok:
+        return  # ไม่ต้องทำอะไร
+
+    # ถ้าไม่ถูกต้อง -> ลบทั้งหมดแล้วสร้างใหม่
+    print("🔄 Rich Menu ไม่ตรง/ไม่มี -> สร้างใหม่...")
+    for menu in menus:
+        httpx.delete(
+            f"https://api.line.me/v2/bot/richmenu/{menu['richMenuId']}",
+            headers=headers
+        )
+
+    # สร้าง Rich Menu ใหม่
+    payload = {
+        "size": {"width": 2500, "height": 843},
+        "selected": True,
+        "name": "Delivery Menu",
+        "chatBarText": "เมนู",
+        "areas": [
+            {
+                "bounds": {"x": 0, "y": 0, "width": 1250, "height": 843},
+                "action": {"type": "uri", "label": "สั่งสินค้า", "uri": current_order_url}
+            },
+            {
+                "bounds": {"x": 1250, "y": 0, "width": 1250, "height": 843},
+                "action": {"type": "uri", "label": "หน้าร้านค้า", "uri": current_merchant_url}
+            }
+        ]
+    }
+    res = httpx.post("https://api.line.me/v2/bot/richmenu", headers=headers, json=payload)
+    if res.status_code != 200:
+        print(f"❌ สร้าง Rich Menu ไม่สำเร็จ: {res.text}")
+        return
+    rich_menu_id = res.json()["richMenuId"]
+
+    # อัปโหลดรูป (ถ้ามีไฟล์ rich_menu.png ในโฟลเดอร์เดียวกับ main.py)
+    image_path = "rich_menu.png"
+    if os.path.exists(image_path):
+        with open(image_path, "rb") as f:
+            httpx.post(
+                f"https://api-data.line.me/v2/bot/richmenu/{rich_menu_id}/content",
+                headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "image/png"},
+                content=f.read()
+            )
+        print("🖼️ อัปโหลดรูป Rich Menu แล้ว")
+
+    # ตั้งเป็น Default
+    httpx.post(
+        f"https://api.line.me/v2/bot/user/all/richmenu/{rich_menu_id}",
+        headers=headers
+    )
+    print(f"✅ Rich Menu พร้อมใช้งาน (ID: {rich_menu_id})")
 # ---- In-memory store ----
 orders: dict = {}
 
@@ -217,6 +301,9 @@ def make_order_status_flex(order: dict) -> dict:
 def root():
     return {"status": "LINE Delivery API running", "liff_id": LIFF_ID or "not set"}
 
+@app.on_event("startup")
+async def startup_event():
+    ensure_rich_menu()
 
 @app.get("/health")
 def health():
