@@ -47,6 +47,8 @@ def verify_line_signature(body: bytes, signature: str) -> bool:
     expected = base64.b64encode(hash).decode("utf-8")
     return hmac.compare_digest(expected, signature)
 
+LIFF_BASE_URL = os.environ.get("LIFF_BASE_URL", "https://your-vercel-app.vercel.app")
+
 async def push_message(user_id: str, text: str):
     """ส่ง Push Message หา user"""
     headers = {
@@ -60,6 +62,85 @@ async def push_message(user_id: str, text: str):
     async with httpx.AsyncClient() as client:
         res = await client.post(f"{LINE_API}/message/push", json=payload, headers=headers)
         return res.status_code
+
+async def reply_message(reply_token: str, messages: list):
+    """Reply กลับไปหา user ด้วย reply token"""
+    headers = {
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {"replyToken": reply_token, "messages": messages}
+    async with httpx.AsyncClient() as client:
+        res = await client.post(f"{LINE_API}/message/reply", json=payload, headers=headers)
+        return res.status_code
+
+def make_order_button(label="สั่งสินค้า"):
+    """Flex Message ปุ่มสั่งสินค้า → เปิด LIFF"""
+    return {
+        "type": "flex",
+        "altText": "กดปุ่มเพื่อสั่งสินค้า",
+        "contents": {
+            "type": "bubble",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": "🛵 สั่งสินค้า", "weight": "bold", "size": "xl"},
+                    {"type": "text", "text": "กดปุ่มด้านล่างเพื่อเลือกเมนูและระบุที่อยู่", "size": "sm", "color": "#888888", "margin": "sm"},
+                ]
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "color": "#06C755",
+                        "action": {
+                            "type": "uri",
+                            "label": label,
+                            "uri": f"https://liff.line.me/{os.environ.get('LIFF_ID', '')}"
+                        }
+                    }
+                ]
+            }
+        }
+    }
+
+def make_merchant_button():
+    """ปุ่มเข้าหน้า dashboard ร้านค้า"""
+    return {
+        "type": "flex",
+        "altText": "เปิดหน้าจัดการออเดอร์",
+        "contents": {
+            "type": "bubble",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {"type": "text", "text": "📋 จัดการออเดอร์", "weight": "bold", "size": "xl"},
+                    {"type": "text", "text": "ดูและอัปเดตสถานะออเดอร์ทั้งหมด", "size": "sm", "color": "#888888", "margin": "sm"},
+                ]
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "color": "#2196f3",
+                        "action": {
+                            "type": "uri",
+                            "label": "เปิดหน้าออเดอร์",
+                            "uri": f"https://liff.line.me/{os.environ.get('LIFF_ID', '')}?mode=merchant"
+                        }
+                    }
+                ]
+            }
+        }
+    }
 
 # ---- Routes ----
 @app.get("/")
@@ -83,23 +164,65 @@ async def webhook(request: Request):
     events = data.get("events", [])
 
     for event in events:
+        reply_token = event.get("replyToken")
+
+        # --- ลูกค้า/ร้านค้า Follow OA ครั้งแรก ---
         if event.get("type") == "follow":
             user_id = event["source"]["userId"]
-            await push_message(
-                user_id,
-                "ยินดีต้อนรับ! กดเมนูด้านล่างเพื่อสั่งสินค้าครับ"
-            )
+            await reply_message(reply_token, [
+                {"type": "text", "text": "ยินดีต้อนรับครับ! 🎉\nกดปุ่มด้านล่างเพื่อเริ่มสั่งสินค้าได้เลย"},
+                make_order_button("สั่งสินค้าเลย"),
+            ])
 
+        # --- รับข้อความจากลูกค้า ---
         elif event.get("type") == "message":
             user_id = event["source"]["userId"]
-            text = event.get("message", {}).get("text", "")
-            if text == "สถานะ":
+            text = event.get("message", {}).get("text", "").strip()
+
+            if text in ["สั่งสินค้า", "สั่งอาหาร", "order", "สั่ง"]:
+                await reply_message(reply_token, [make_order_button()])
+
+            elif text in ["ร้านค้า", "merchant", "dashboard", "ออเดอร์", "จัดการ"]:
+                await reply_message(reply_token, [make_merchant_button()])
+
+            elif text in ["สถานะ", "status"]:
                 user_orders = [o for o in orders.values() if o["user_id"] == user_id]
                 if user_orders:
                     last = user_orders[-1]
-                    await push_message(user_id, f"ออเดอร์ล่าสุด: {last['status']}")
+                    msg = f"ออเดอร์ล่าสุด #{last['order_id']}\nสินค้า: {', '.join(last['items'])}\nสถานะ: {last['status']}"
                 else:
-                    await push_message(user_id, "ยังไม่มีออเดอร์ครับ")
+                    msg = "ยังไม่มีออเดอร์ครับ"
+                await reply_message(reply_token, [{"type": "text", "text": msg}])
+
+            elif text in ["ช่วยเหลือ", "help", "?"]:
+                await reply_message(reply_token, [
+                    {
+                        "type": "text",
+                        "text": "คำสั่งที่ใช้ได้ครับ:",
+                        "quickReply": {
+                            "items": [
+                                {"type": "action", "action": {"type": "message", "label": "🛵 สั่งสินค้า", "text": "สั่งสินค้า"}},
+                                {"type": "action", "action": {"type": "message", "label": "📋 ดูออเดอร์", "text": "สถานะ"}},
+                                {"type": "action", "action": {"type": "message", "label": "🏪 ร้านค้า", "text": "ร้านค้า"}},
+                            ]
+                        }
+                    }
+                ])
+            else:
+                # ข้อความทั่วไป → แสดงปุ่ม Quick Reply
+                await reply_message(reply_token, [
+                    {
+                        "type": "text",
+                        "text": "สวัสดีครับ! กดปุ่มด้านล่างเพื่อใช้งานได้เลย 👇",
+                        "quickReply": {
+                            "items": [
+                                {"type": "action", "action": {"type": "message", "label": "🛵 สั่งสินค้า", "text": "สั่งสินค้า"}},
+                                {"type": "action", "action": {"type": "message", "label": "📋 เช็คสถานะ", "text": "สถานะ"}},
+                                {"type": "action", "action": {"type": "message", "label": "🏪 หน้าร้านค้า", "text": "ร้านค้า"}},
+                            ]
+                        }
+                    }
+                ])
 
     return {"status": "ok"}
 
