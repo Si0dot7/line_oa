@@ -228,7 +228,7 @@ def make_order_button_flex(label="สั่งสินค้า"):
                         "type": "box", "layout": "horizontal",
                         "contents": [
                             {"type": "text", "text": "⚡ ส่งไวทันใจ", "size": "xs", "color": "#555555", "flex": 1},
-                            {"type": "text", "text": "🎁 ฟรีค่าส่ง 150฿+", "size": "xs", "color": "#555555", "flex": 1},
+                            {"type": "text", "text": "🎁 ฟรีค่าส่ง ", "size": "xs", "color": "#555555", "flex": 1},
                         ]
                     }
                 ]
