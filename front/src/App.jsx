@@ -113,8 +113,8 @@ export default function App() {
         <div className="relative z-10 mt-4 bg-white bg-opacity-15 rounded-2xl p-3.5 flex items-center gap-3 border border-white border-opacity-20">
           <div className="text-3xl">🎁</div>
           <div>
-            <p className="text-white font-bold text-sm">ฟรีค่าส่งวันนี้!</p>
-            <p className="text-blue-100 text-xs">สั่งครบ 150 ฿ · ทุกวัน 11.00–14.00 น.</p>
+            <p className=" font-bold text-sm">ฟรีค่าส่งวันนี้!</p>
+            <p className=" text-xs">สั่งครบ 150 ฿ · ทุกวัน 11.00–14.00 น.</p>
           </div>
           <div className="ml-auto text-white opacity-60">›</div>
         </div>

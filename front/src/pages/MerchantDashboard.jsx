@@ -420,8 +420,8 @@ export default function MerchantDashboard({ profile }) {
             const m = STATUS_META[s]
             return (
               <div key={s} className="bg-white bg-opacity-15 rounded-xl p-2 text-center">
-                <p className="text-white font-black text-xl leading-none">{stats[s]}</p>
-                <p className="text-indigo-100 text-[10px] mt-0.5">{m.icon}</p>
+                <p className=" font-black text-xl leading-none">{stats[s]}</p>
+                <p className="text-[10px] mt-0.5">{m.icon}</p>
               </div>
             )
           })}
@@ -429,8 +429,8 @@ export default function MerchantDashboard({ profile }) {
 
         {/* Revenue */}
         <div className="mt-3 bg-white bg-opacity-15 rounded-xl px-4 py-2.5 flex items-center justify-between">
-          <p className="text-indigo-100 text-sm">💰 รายได้วันนี้</p>
-          <p className="text-white font-black text-lg">{todayRevenue.toLocaleString()}฿</p>
+          <p className="text-sm">💰 รายได้วันนี้</p>
+          <p className=" font-black text-lg">{todayRevenue.toLocaleString()}฿</p>
         </div>
       </div>
 
