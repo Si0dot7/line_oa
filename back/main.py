@@ -59,8 +59,6 @@ def ensure_rich_menu():
                 print(f"✅ Rich Menu เดิมถูกต้องแล้ว (ID: {menu['richMenuId']})")
                 break
 
-    if menu_ok:
-        return  # ไม่ต้องทำอะไร
 
     # ถ้าไม่ถูกต้อง -> ลบทั้งหมดแล้วสร้างใหม่
     print("🔄 Rich Menu ไม่ตรง/ไม่มี -> สร้างใหม่...")
@@ -105,6 +103,10 @@ def ensure_rich_menu():
         print("🖼️ อัปโหลดรูป Rich Menu แล้ว")
 
     # ตั้งเป็น Default
+    httpx.delete(
+    "https://api.line.me/v2/bot/user/all/richmenu",
+    headers=headers
+)
     httpx.post(
         f"https://api.line.me/v2/bot/user/all/richmenu/{rich_menu_id}",
         headers=headers
