@@ -1,2 +1,5 @@
+# Ignore Python bytecode (auto-generated)
 __pycache__/
+
+# Ignore local environment variables (contains secrets/API keys)
 .env
