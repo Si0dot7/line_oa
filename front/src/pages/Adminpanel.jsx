@@ -10,7 +10,7 @@ export default function AdminPanel({ profile }) {
   const [users, setUsers]   = useState([])
   const [search, setSearch] = useState("")
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving]  = useState(null) // userId กำลัง save
+  const [saving, setSaving]  = useState(null)
 
   useEffect(() => { fetchUsers() }, [])
 
