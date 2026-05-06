@@ -11,7 +11,7 @@ import json
 from dotenv import load_dotenv
 
 load_dotenv()
-
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = FastAPI(title="LINE Delivery Backend v2")
 
 app.add_middleware(
@@ -294,7 +294,7 @@ def ensure_rich_menu():
         return
     rid = res.json()["richMenuId"]
 
-    image_path = "rich_menu.png"
+    image_path = os.path.join(BASE_DIR, "rich_menu.png")
     if os.path.exists(image_path):
         with open(image_path, "rb") as f:
             httpx.post(
