@@ -496,3 +496,146 @@ async def get_order(order_id: str):
     if not rows:
         raise HTTPException(status_code=404, detail="Order not found")
     return rows[0]
+
+# ── เพิ่มต่อจาก main.py เดิม (ส่วน Routes) ──────────────────────────
+# วางต่อจาก GET /orders/{order_id}
+
+from pydantic import BaseModel
+from typing import Optional
+
+
+class RoleUpdate(BaseModel):
+    role: str   # 'customer' | 'merchant' | 'rider' | 'admin'
+
+
+class ActiveUpdate(BaseModel):
+    is_active: bool
+
+
+# helper เพิ่ม: sb_post สำหรับอนาคต
+async def sb_post(table: str, data: dict):
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return None
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    async with httpx.AsyncClient() as c:
+        res = await c.post(url, headers=sb_headers(), json=data)
+        return res.json()
+
+
+# ── User endpoints (admin only) ──────────────────────────────────────
+
+@app.get("/users")
+async def list_users(role: Optional[str] = None, limit: int = 200):
+    """ดู user ทั้งหมด — admin ควร validate token ก่อนเรียก"""
+    params = {"order": "created_at.desc", "limit": str(limit)}
+    if role:
+        params["role"] = f"eq.{role}"
+    rows = await sb_get("users", params)
+    return rows if rows else []
+
+
+@app.patch("/users/{user_id}/role")
+async def update_user_role(user_id: str, body: RoleUpdate):
+    """เปลี่ยน role user"""
+    valid_roles = {"customer", "merchant", "rider", "admin"}
+    if body.role not in valid_roles:
+        raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of {valid_roles}")
+
+    result = await sb_patch("users", {"line_user_id": user_id}, {"role": body.role})
+    return {"user_id": user_id, "role": body.role, "updated": True}
+
+
+@app.patch("/users/{user_id}/active")
+async def update_user_active(user_id: str, body: ActiveUpdate):
+    """ปิด/เปิดบัญชี user"""
+    await sb_patch("users", {"line_user_id": user_id}, {"is_active": body.is_active})
+    return {"user_id": user_id, "is_active": body.is_active, "updated": True}
+
+
+# ── Cancel order endpoint ─────────────────────────────────────────────
+
+class CancelOrder(BaseModel):
+    cancelled_by:  str            # 'customer' | 'merchant' | 'rider'
+    cancel_reason: Optional[str] = ""
+    user_id:       Optional[str] = None  # ถ้าไม่ส่ง จะดึงจาก Supabase
+
+
+CANCELLABLE_STATUSES = {"รอร้านยืนยัน", "กำลังทำ"}
+
+
+@app.post("/orders/{order_id}/cancel")
+async def cancel_order(order_id: str, body: CancelOrder):
+    """ยกเลิกออเดอร์ + push LINE แจ้งลูกค้า"""
+    rows = await sb_get("orders", {"id": f"eq.{order_id}"})
+    if not rows:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    order = rows[0]
+    if order["status"] not in CANCELLABLE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Cannot cancel order with status: {order['status']}")
+
+    await sb_patch("orders", {"id": order_id}, {
+        "status":        "ยกเลิก",
+        "cancelled_by":  body.cancelled_by,
+        "cancel_reason": body.cancel_reason or "",
+        "updated_at":    "now()",
+    })
+
+    # Push LINE แจ้งลูกค้า
+    customer_id = body.user_id or order.get("user_id")
+    if customer_id:
+        flex = make_cancel_flex(order_id, body.cancel_reason or "", body.cancelled_by)
+        await push_message(customer_id, [flex])
+
+    return {"order_id": order_id, "status": "ยกเลิก", "cancelled_by": body.cancelled_by}
+
+
+def make_cancel_flex(order_id: str, reason: str, cancelled_by: str) -> dict:
+    """Flex Message แจ้งยกเลิกออเดอร์"""
+    short_id = str(order_id)[-6:].upper()
+    by_map   = {"customer": "ลูกค้า", "merchant": "ร้านค้า", "rider": "ไรเดอร์"}
+    by_label = by_map.get(cancelled_by, cancelled_by)
+
+    return {
+        "type": "flex",
+        "altText": f"❌ ออเดอร์ #{short_id} ถูกยกเลิก",
+        "contents": {
+            "type": "bubble",
+            "header": {
+                "type": "box", "layout": "vertical",
+                "backgroundColor": "#F44336", "paddingAll": "14px",
+                "contents": [
+                    {"type": "text", "text": "❌ ออเดอร์ถูกยกเลิก", "color": "#ffffff", "weight": "bold", "size": "lg"},
+                    {"type": "text", "text": f"เลขออเดอร์ #{short_id}", "color": "#ffcdd2", "size": "xs", "margin": "xs"},
+                ]
+            },
+            "body": {
+                "type": "box", "layout": "vertical", "paddingAll": "14px",
+                "contents": [
+                    {
+                        "type": "box", "layout": "horizontal",
+                        "contents": [
+                            {"type": "text", "text": "ยกเลิกโดย", "size": "sm", "color": "#888888", "flex": 3},
+                            {"type": "text", "text": by_label, "size": "sm", "flex": 4, "align": "end"},
+                        ]
+                    },
+                    *(
+                        [{
+                            "type": "box", "layout": "horizontal", "margin": "sm",
+                            "contents": [
+                                {"type": "text", "text": "เหตุผล", "size": "sm", "color": "#888888", "flex": 3},
+                                {"type": "text", "text": reason, "size": "sm", "flex": 4, "wrap": True, "align": "end"},
+                            ]
+                        }] if reason else []
+                    ),
+                ]
+            },
+            "footer": {
+                "type": "box", "layout": "vertical", "paddingAll": "10px",
+                "contents": [{
+                    "type": "button", "style": "primary", "color": "#1E88E5",
+                    "action": {"type": "uri", "label": "🛒 สั่งใหม่", "uri": liff_url("order")}
+                }]
+            }
+        }
+    }
