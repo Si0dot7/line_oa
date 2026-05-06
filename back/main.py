@@ -320,9 +320,11 @@ def ensure_rich_menu():
         print("⚠️ ไม่มีรูป rich_menu.png และ generate ไม่สำเร็จ — menu จะไม่แสดงรูป")
 
     # ── ผูก menu กับทุก user ───────────────────────────────────────────
-    httpx.delete("https://api.line.me/v2/bot/user/all/richmenu", headers=headers)
-    httpx.post(f"https://api.line.me/v2/bot/user/all/richmenu/{rid}", headers=headers)
-    print(f"✅ Rich Menu พร้อม (ID: {rid})")
+    res = httpx.post(
+    f"https://api.line.me/v2/bot/richmenu/{rid}/set/default",
+    headers=headers
+)   
+    print(f"Set default menu: {res.status_code}")
 
 
 def _generate_rich_menu_image(output_path: str) -> str | None:
@@ -449,11 +451,22 @@ async def webhook(request: Request):
         user_id     = event.get("source", {}).get("userId", "")
 
         if event_type == "follow":
+    # ── ผูก Rich Menu ให้ user ใหม่ทันที ──────────────────────────
+            if LINE_CHANNEL_ACCESS_TOKEN:
+                rid_res = httpx.get(
+                    "https://api.line.me/v2/bot/user/all/richmenu",
+                    headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
+                )
+                # ดึง default richMenuId แล้วผูกให้ user นี้
+                default_rid = rid_res.json().get("richMenuId", "")
+                if default_rid:
+                    httpx.post(
+                        f"https://api.line.me/v2/bot/user/{user_id}/richmenu/{default_rid}",
+                        headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
+                    )
+
             await reply_message(reply_token, [
-                {
-                    "type": "text",
-                    "text": "ยินดีต้อนรับครับ! 🎉\nกดปุ่มด้านล่างเพื่อสั่งสินค้าได้เลย\n\n⭐ สะสมแต้มทุกคำสั่งซื้อ\n🎁 ฟรีค่าส่งเมื่อสั่ง 150฿+",
-                },
+                {"type": "text", "text": "ยินดีต้อนรับครับ! 🎉\n..."},
                 make_order_button_flex("สั่งสินค้าเลย 🛵"),
             ])
 
