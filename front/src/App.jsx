@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react"
 import OrderForm from "./pages/OrderForm"
 import MerchantDashboard from "./pages/MerchantDashboard"
-import AdminPanel from "./pages/AdminPanel"
+import AdminPanel from "./pages/Adminpanel"
 import { supabase } from "./lib/supabase"
 import { useLiff } from "./hooks/useLiff"
 import { useRole } from "./hooks/useRole"
