@@ -1,242 +1,214 @@
-# 🛵 LINE Delivery — ระบบสั่งอาหารผ่าน LINE LIFF
+# 🛵 LINE Delivery — ระบบสั่งอาหาร Delivery ผ่าน LINE LIFF
 
-ระบบ Delivery สำหรับ LINE OA ที่รองรับ **3 บทบาท**: ลูกค้า · ร้านค้า · ไรเดอร์  
-สร้างบน React (LIFF) + FastAPI + Supabase + LINE Messaging API
-
----
-
-## 🗂️ โครงสร้าง Project
-
-```
-📦 line-delivery/
-├── 🖥️  frontend/                   (React + Vite + Tailwind)
-│   └── src/
-│       ├── App.jsx                 ← Root: LIFF init, role routing, home screen
-│       ├── pages/
-│       │   ├── OrderForm.jsx       ← หน้าสั่งสินค้า (ลูกค้า)
-│       │   ├── MerchantDashboard.jsx ← แดชบอร์ดร้านค้า
-│       │   ├── RiderDashboard.jsx  ← แดชบอร์ดไรเดอร์ (TODO)
-│       │   └── AdminPanel.jsx      ← จัดการสิทธิ์ user (TODO)
-│       └── lib/
-│           └── supabase.js         ← Supabase client
-│
-└── 🐍  backend/
-    └── main.py                     ← FastAPI: webhook, push notification, LINE Flex
-```
+ระบบสั่งอาหาร Delivery แบบครบวงจรที่ทำงานใน LINE App ผ่าน LIFF (LINE Front-end Framework)  
+Frontend: React + Vite + Tailwind · Backend: FastAPI · Database: Supabase (PostgreSQL + Realtime)
 
 ---
 
-## 🧩 Tech Stack
+## 📐 Architecture
 
-| Layer     | Technology                        |
-|-----------|-----------------------------------|
-| Frontend  | React 18 + Vite + Tailwind CSS    |
-| Auth/Chat | LINE LIFF SDK + Messaging API     |
-| Database  | Supabase (PostgreSQL + Realtime)  |
-| Backend   | FastAPI (Python) + httpx          |
-| Hosting   | (แนะนำ: Vercel frontend, Render/Railway backend) |
-
----
-
-## 🗄️ Supabase Database Schema
-
-### `users`
-```sql
-id              uuid PK
-line_user_id    text UNIQUE    -- LINE userId
-display_name    text
-picture_url     text
-role            text DEFAULT 'customer'  -- 'customer' | 'merchant' | 'rider' | 'admin'
-is_active       bool DEFAULT true
-last_seen       timestamptz
-created_at      timestamptz
 ```
-
-### `orders`
-```sql
-id              uuid PK
-user_id         text           -- LINE userId ของลูกค้า
-display_name    text
-items           text[]
-items_detail    jsonb          -- [{id, name, qty, price, emoji}]
-total_price     float
-subtotal        float
-delivery_fee    float
-points_used     float
-payment_method  text           -- cash | transfer | promptpay
-lat             float
-lng             float
-address         text
-note            text
-status          text           -- รอร้านยืนยัน | กำลังทำ | รอไรเดอร์รับ | กำลังจัดส่ง | ส่งสำเร็จ | ยกเลิก
-rider_id        text NULL      -- LINE userId ของไรเดอร์ที่รับงาน
-cancelled_by    text NULL      -- 'customer' | 'merchant' | 'rider'
-cancel_reason   text NULL
-created_at      timestamptz
-updated_at      timestamptz
-```
-
-### `menu_items`
-```sql
-id              uuid PK
-name            text
-price           float
-emoji           text
-image_url       text NULL
-category        text
-description     text
-is_available    bool DEFAULT true
-is_popular      bool DEFAULT false
-sort_order      int
-sold_count      int DEFAULT 0
-rating          float DEFAULT 4.5
-created_at      timestamptz
-```
-
-### `user_points`
-```sql
-user_id         text PK        -- LINE userId
-points          int DEFAULT 0
-total_earned    int DEFAULT 0
-total_spent     int DEFAULT 0
-updated_at      timestamptz
-```
-
-### `saved_addresses`
-```sql
-id              uuid PK
-user_id         text
-address         text
-used_count      int DEFAULT 0
-lat             float NULL
-lng             float NULL
-created_at      timestamptz
-```
-
-### `flash_deals`
-```sql
-id              uuid PK
-menu_item_id    uuid FK → menu_items
-discount_percent int
-start_at        timestamptz
-end_at          timestamptz
-is_active       bool DEFAULT true
-created_at      timestamptz
-```
-
-### `rider_earnings` (TODO)
-```sql
-id              uuid PK
-rider_id        text           -- LINE userId
-order_id        uuid FK
-amount          float
-earned_at       timestamptz
+LINE App (LIFF)
+    │
+    ▼
+React Frontend (Vite + Tailwind)
+    ├── useLiff.js        ← LINE profile / auth
+    ├── useRole.js        ← role + realtime permission
+    └── Pages
+        ├── OrderForm          ← ลูกค้าสั่งสินค้า
+        ├── MerchantDashboard  ← ร้านค้าจัดการออเดอร์ + เมนู
+        ├── RiderDashboard     ← ไรเดอร์รับ-ส่งงาน
+        └── AdminPanel         ← จัดการสิทธิ์ users
+    │
+    ├── Supabase (direct)   ← orders, menu_items, users, points
+    └── FastAPI Backend     ← LINE Webhook, Push Message, Rich Menu
 ```
 
 ---
 
-## 🌐 Environment Variables
+## 👥 Roles
 
-### Frontend (`.env`)
-```
-VITE_LIFF_ID=your-liff-id
-VITE_SUPABASE_URL=https://xxx.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key
-VITE_API_URL=https://your-backend.railway.app
+| Role | สิทธิ์ | หน้าที่เข้าได้ |
+|------|--------|--------------|
+| `customer` | default | สั่งสินค้า, ติดตามออเดอร์ |
+| `merchant` | จัดการร้าน | + MerchantDashboard |
+| `rider` | ส่งสินค้า | + RiderDashboard |
+| `admin` | ทุกอย่าง | + AdminPanel + ทุกหน้า |
+
+Role เปลี่ยนได้ real-time ผ่าน AdminPanel — ผู้ใช้ไม่ต้อง refresh
+
+---
+
+## 🗄️ Database Schema (Supabase)
+
+```sql
+users          — LINE profile + role + is_active
+orders         — ออเดอร์ทั้งหมด (status, items_detail, lat/lng)
+menu_items     — เมนูอาหาร (ร้านค้าจัดการได้)
+saved_addresses — ที่อยู่บันทึก per user
+user_points    — loyalty points
+flash_deals    — โปรโมชั่นระยะเวลา
 ```
 
-### Backend (`.env`)
+### Order Status Flow
 ```
-LINE_CHANNEL_SECRET=xxx
-LINE_CHANNEL_ACCESS_TOKEN=xxx
-LIFF_ID=xxx
-SUPABASE_URL=https://xxx.supabase.co
-SUPABASE_SERVICE_KEY=your-service-role-key
+รอร้านยืนยัน → กำลังทำ → กำลังจัดส่ง → ส่งสำเร็จ
+                                       └→ ยกเลิก
 ```
 
 ---
 
-## 🚀 วิธีรัน
+## 🚀 Setup
+
+### 1. Clone & Install
 
 ```bash
 # Frontend
-cd frontend
 npm install
+
+# Backend
+pip install fastapi uvicorn httpx python-dotenv Pillow
+```
+
+### 2. Environment Variables
+
+**Frontend** — `.env`
+```env
+VITE_SUPABASE_URL=https://xxxx.supabase.co
+VITE_SUPABASE_ANON_KEY=eyJ...
+VITE_LIFF_ID=1234567890-xxxxxxxx
+VITE_API_URL=https://your-backend.railway.app
+```
+
+**Backend** — `.env`
+```env
+LINE_CHANNEL_SECRET=xxxxxxxx
+LINE_CHANNEL_ACCESS_TOKEN=xxxxxxxx
+LIFF_ID=1234567890-xxxxxxxx
+SUPABASE_URL=https://xxxx.supabase.co
+SUPABASE_SERVICE_KEY=eyJ...   # service_role key เท่านั้น
+```
+
+### 3. Supabase Setup
+
+รัน SQL ใน Supabase SQL Editor:
+
+```sql
+-- สร้าง tables ทั้งหมด (ดูใน schema.sql)
+-- จากนั้น:
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role      text    DEFAULT 'customer';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active boolean DEFAULT true;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancelled_by  text;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancel_reason text;
+
+-- เปิด RLS
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "users_select" ON users FOR SELECT USING (true);
+CREATE POLICY "users_insert" ON users FOR INSERT WITH CHECK (true);
+CREATE POLICY "users_update" ON users FOR UPDATE USING (true);
+```
+
+เปิด Realtime สำหรับ tables: `orders`, `menu_items`, `users`  
+ไปที่ Dashboard → Database → Replication
+
+### 4. LINE Setup
+
+1. สร้าง LINE Messaging API channel ใน [LINE Developers](https://developers.line.biz)
+2. สร้าง LIFF app → ใส่ URL ของ frontend → คัดลอก LIFF ID
+3. ตั้ง Webhook URL: `https://your-backend/webhook`
+4. เปิด "Use webhook" และ "Allow bot to join group chats"
+
+### 5. Run
+
+```bash
+# Frontend
 npm run dev
 
 # Backend
-cd backend
-pip install fastapi uvicorn httpx python-dotenv
 uvicorn main:app --reload --port 8000
 ```
 
 ---
 
-## 👥 Role System
-
-| Role       | เข้าถึงได้                                    | ไม่สามารถเข้า                    |
-|------------|----------------------------------------------|----------------------------------|
-| `customer` | OrderForm (สั่งสินค้า, ติดตาม, โปรไฟล์)     | MerchantDashboard, RiderDashboard, AdminPanel |
-| `merchant` | MerchantDashboard (ออเดอร์, เมนู, deal, สถิติ) + OrderForm | RiderDashboard, AdminPanel |
-| `rider`    | RiderDashboard (งานที่รับ, นำทาง, ประวัติ)   | MerchantDashboard, AdminPanel    |
-| `admin`    | AdminPanel (จัดการสิทธิ์ทุก user) + ทุกอย่าง | —                                |
-
-**Role กำหนดใน `users.role` ใน Supabase**  
-Admin assign role ผ่านหน้า AdminPanel ใน LIFF
-
----
-
-## 📡 API Endpoints (Backend)
-
-| Method | Path                        | ใช้ทำอะไร                          |
-|--------|-----------------------------|-------------------------------------|
-| GET    | `/`                         | Health check                        |
-| GET    | `/health`                   | ตรวจสอบ env vars                    |
-| POST   | `/webhook`                  | LINE Webhook events                 |
-| POST   | `/orders`                   | รับ notify → ส่ง LINE push ลูกค้า  |
-| PATCH  | `/orders/{id}/status`       | อัปเดตสถานะ + push LINE             |
-| GET    | `/orders`                   | ดูออเดอร์ทั้งหมด (merchant)        |
-| GET    | `/orders/{id}`              | ดูออเดอร์เดียว                      |
-| POST   | `/orders/{id}/cancel`       | ยกเลิกออเดอร์ + push LINE (TODO)   |
-| POST   | `/notify/merchant`          | push แจ้งร้านค้าเมื่อมี order ใหม่ (TODO) |
-| POST   | `/notify/rider`             | push แจ้งไรเดอร์เมื่อ order พร้อมส่ง (TODO) |
-| GET    | `/users`                    | ดูรายชื่อ user ทั้งหมด (admin) (TODO) |
-| PATCH  | `/users/{id}/role`          | เปลี่ยน role user (admin) (TODO)   |
-
----
-
-## 🔔 LINE Push Notification Flow
+## 📁 Project Structure
 
 ```
-ลูกค้าสั่ง → Supabase INSERT
-    ↓
-Frontend POST /orders (backend)
-    ↓
-Backend push LINE → ลูกค้า (ยืนยันออเดอร์)
-Backend push LINE → ร้านค้าทุก account ที่ role=merchant (TODO)
-    ↓
-ร้านค้าอัปเดตสถานะ "กำลังทำ"
-    ↓
-Backend push LINE → ลูกค้า
-    ↓
-ร้านค้าอัปเดต "รอไรเดอร์รับ"
-    ↓
-Backend push LINE → ไรเดอร์ทุก account ที่ role=rider (TODO)
-    ↓
-ไรเดอร์กด "รับงาน" → status = "กำลังจัดส่ง"
-    ↓
-Backend push LINE → ลูกค้า + ร้านค้า
-    ↓
-ไรเดอร์กด "ส่งสำเร็จ" → status = "ส่งสำเร็จ"
-    ↓
-Backend push LINE → ลูกค้า (รับของแล้ว + แต้ม)
+├── src/
+│   ├── App.jsx                 ← Router + Auth + Role gate
+│   ├── hooks/
+│   │   ├── useLiff.js          ← LIFF init (dev/prod)
+│   │   └── useRole.js          ← Role + Realtime subscription
+│   ├── lib/
+│   │   └── supabase.js         ← Supabase client
+│   └── pages/
+│       ├── OrderForm.jsx       ← สั่งสินค้า + ติดตาม + โปรไฟล์
+│       ├── MerchantDashboard.jsx ← ออเดอร์ + เมนู + Flash Deals + Analytics
+│       ├── RiderDashboard.jsx  ← งาน + ประวัติ + รายได้
+│       └── Adminpanel.jsx      ← จัดการ users + roles
+├── main.py                     ← FastAPI: Webhook + Push + Rich Menu
+└── rich_menu.png               ← Auto-generated (Pillow)
 ```
 
 ---
 
-## 📝 หมายเหตุสำคัญ
+## 🔔 LINE Features
 
-- **Role-based access**: ตรวจสอบ role จาก `users` table ก่อน render component
-- **ยกเลิกออเดอร์**: ทำได้เฉพาะ status `รอร้านยืนยัน` และ `กำลังทำ` เท่านั้น
-- **ไรเดอร์รับงาน**: 1 order = 1 rider (first-come-first-served)
-- **Supabase RLS**: ควรเปิด Row Level Security ให้ลูกค้าเห็นแค่ order ตัวเอง
+### Rich Menu
+สร้าง/อัปเดตอัตโนมัติตอน server start  
+2 ปุ่ม: สั่งสินค้า · หน้าร้านค้า
+
+### Push Notifications (automatic)
+| เหตุการณ์ | ผู้รับ |
+|----------|--------|
+| สร้างออเดอร์ | ลูกค้า ← ยืนยันรับออเดอร์ + รายละเอียด |
+| เปลี่ยน status | ลูกค้า ← แจ้งสถานะใหม่ |
+| ยกเลิกออเดอร์ | ลูกค้า ← แจ้งยกเลิก + เหตุผล |
+
+### Webhook Commands
+ผู้ใช้พิมพ์ใน LINE chat:
+- `สั่งสินค้า` / `เมนู` → เปิดหน้าสั่ง
+- `สถานะ` → แสดงออเดอร์ล่าสุด
+- `ร้านค้า` → เปิดหน้าร้าน
+- `ช่วยเหลือ` → แสดงคำสั่งทั้งหมด
+
+---
+
+## 🌐 Deploy
+
+### Frontend (Vercel / Netlify)
+```bash
+npm run build
+# upload dist/ หรือ connect GitHub repo
+```
+
+### Backend (Railway / Render)
+```bash
+# Procfile
+web: uvicorn main:app --host 0.0.0.0 --port $PORT
+```
+
+---
+
+## 💳 Payment
+
+ปัจจุบันรองรับ 3 วิธี (COD / manual):
+- `cash` — เงินสดปลายทาง
+- `transfer` — โอนเงินธนาคาร (manual confirm)
+- `promptpay` — QR PromptPay (manual confirm)
+
+ดูหัวข้อ **การพัฒนาระบบชำระเงิน** สำหรับ roadmap การ integrate payment gateway
+
+---
+
+## 🛡️ Security Notes
+
+- `SUPABASE_SERVICE_KEY` ใช้ **backend เท่านั้น** ห้าม expose ใน frontend
+- Frontend ใช้ `SUPABASE_ANON_KEY` + RLS policies
+- LINE Signature verify ทุก webhook request
+- Role check ทั้ง frontend (UI gate) และ backend (API) ควรเพิ่มในอนาคต
+
+---
+
+## 📝 License
+
+MIT

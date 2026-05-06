@@ -190,9 +190,9 @@ export default function RiderDashboard({ profile }) {
       {/* ── Summary Cards ─────────────────────────────────────────── */}
       <div className="bg-orange-500 px-4 pt-4 pb-6">
         <div className="grid grid-cols-3 gap-2">
-          <SummaryCard icon="⏳" label="รอรับ"    value={pendingCount}    color="bg-white bg-opacity-20 text-white" />
-          <SummaryCard icon="🛵" label="กำลังส่ง" value={deliveringCount} color="bg-white bg-opacity-20 text-white" />
-          <SummaryCard icon="💰" label="วันนี้"   value={`${todayEarnings}฿`} color="bg-white bg-opacity-20 text-white" />
+          <SummaryCard icon="⏳" label="รอรับ"    value={pendingCount}    color="bg-white bg-opacity-20 " />
+          <SummaryCard icon="🛵" label="กำลังส่ง" value={deliveringCount} color="bg-white bg-opacity-20 " />
+          <SummaryCard icon="💰" label="วันนี้"   value={`${todayEarnings}฿`} color="bg-white bg-opacity-20 " />
         </div>
       </div>
 
