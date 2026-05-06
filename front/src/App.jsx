@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react"
 import OrderForm from "./pages/OrderForm"
 import MerchantDashboard from "./pages/MerchantDashboard"
+import RiderDashboard from "./pages/RiderDashboard"
 import AdminPanel from "./pages/Adminpanel"
 import { supabase } from "./lib/supabase"
 import { useLiff } from "./hooks/useLiff"
@@ -105,6 +106,13 @@ export default function App() {
     <div className="max-w-md mx-auto min-h-screen bg-gray-50">
       <TopBar title="แดชบอร์ดร้านค้า" onBack={() => setScreen(null)} color="indigo" />
       <MerchantDashboard profile={profile} />
+    </div>
+  )
+
+  if (screen === "rider" && isRider) return (
+    <div className="max-w-md mx-auto min-h-screen bg-gray-50">
+      <TopBar title="หน้าไรเดอร์" onBack={() => setScreen(null)} color="orange" />
+      <RiderDashboard profile={profile} />
     </div>
   )
 

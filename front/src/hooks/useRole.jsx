@@ -2,11 +2,6 @@
 import { useState, useEffect } from "react"
 import { supabase } from "../lib/supabase"
 
-/**
- * อ่าน role ของ user จาก Supabase users table
- * @param {string} lineUserId - LINE userId จาก LIFF profile
- * @returns {{ role, loading, isCustomer, isMerchant, isRider, isAdmin, isActive }}
- */
 export function useRole(lineUserId) {
   const [role, setRole]       = useState("customer")
   const [isActive, setActive] = useState(true)
@@ -18,6 +13,7 @@ export function useRole(lineUserId) {
       return
     }
 
+    // ── โหลดครั้งแรก ─────────────────────────────────────────────────
     supabase
       .from("users")
       .select("role, is_active")
@@ -32,6 +28,28 @@ export function useRole(lineUserId) {
         }
         setLoading(false)
       })
+
+    // ── Realtime: อัปเดตทันทีเมื่อ admin เปลี่ยน role ────────────────
+    const ch = supabase
+      .channel(`role-${lineUserId}`)
+      .on(
+        "postgres_changes",
+        {
+          event:  "UPDATE",
+          schema: "public",
+          table:  "users",
+          filter: `line_user_id=eq.${lineUserId}`,
+        },
+        (payload) => {
+          if (payload.new) {
+            setRole(payload.new.role || "customer")
+            setActive(payload.new.is_active ?? true)
+          }
+        }
+      )
+      .subscribe()
+
+    return () => supabase.removeChannel(ch)
   }, [lineUserId])
 
   return {
