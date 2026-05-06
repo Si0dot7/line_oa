@@ -82,6 +82,24 @@ async def push_message(user_id: str, messages: list):
         return res.status_code
 
 
+async def _multicast_message(user_ids: list[str], messages: list):
+    """ส่ง Multicast — efficient กว่า push เมื่อส่งหลายคน (max 500/call)"""
+    if not LINE_CHANNEL_ACCESS_TOKEN or not user_ids:
+        return
+    headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}
+    # LINE multicast รองรับ max 500 user ต่อ request
+    for i in range(0, len(user_ids), 500):
+        chunk = user_ids[i:i+500]
+        async with httpx.AsyncClient() as c:
+            res = await c.post(
+                f"{LINE_API}/message/multicast",
+                json={"to": chunk, "messages": messages},
+                headers=headers,
+            )
+            if res.status_code != 200:
+                print(f"[multicast] Error {res.status_code}: {res.text}")
+
+
 async def reply_message(reply_token: str, messages: list):
     if not LINE_CHANNEL_ACCESS_TOKEN:
         print(f"[reply] No token: {messages}")
@@ -533,20 +551,104 @@ async def webhook(request: Request):
     return {"status": "ok"}
 
 
+def make_new_order_merchant_flex(order: dict) -> dict:
+    """Flex แจ้งร้านค้าว่ามีออเดอร์ใหม่เข้า — มีปุ่มเปิดหน้า merchant dashboard"""
+    items_text = ", ".join(order.get("items", [])) if order.get("items") else "—"
+    total      = order.get("total_price", 0)
+    short_id   = str(order.get("order_id", ""))[-6:].upper()
+    address    = order.get("address", "ไม่ระบุ")
+    payment_map = {"cash": "💵 เงินสด", "transfer": "🏦 โอนเงิน", "promptpay": "📱 PromptPay"}
+    payment_label = payment_map.get(order.get("payment_method", "cash"), "💵 เงินสด")
+
+    return {
+        "type": "flex",
+        "altText": f"🔔 ออเดอร์ใหม่ #{short_id} — {total}฿",
+        "contents": {
+            "type": "bubble",
+            "header": {
+                "type": "box", "layout": "vertical",
+                "backgroundColor": "#FF6F00", "paddingAll": "16px",
+                "contents": [
+                    {"type": "text", "text": "🔔 ออเดอร์ใหม่เข้ามา!", "color": "#ffffff", "weight": "bold", "size": "xl"},
+                    {"type": "text", "text": f"เลขออเดอร์ #{short_id}", "color": "#FFE0B2", "size": "sm", "margin": "sm"},
+                ]
+            },
+            "body": {
+                "type": "box", "layout": "vertical", "paddingAll": "16px",
+                "contents": [
+                    {"type": "text", "text": "รายการ", "weight": "bold", "color": "#555555", "size": "sm"},
+                    {"type": "text", "text": items_text, "size": "sm", "color": "#333333", "wrap": True, "margin": "sm"},
+                    {"type": "separator", "margin": "md"},
+                    {
+                        "type": "box", "layout": "horizontal", "margin": "md",
+                        "contents": [
+                            {"type": "text", "text": "ยอดรวม",    "size": "sm", "color": "#888888", "flex": 3},
+                            {"type": "text", "text": f"{total}฿",  "size": "md", "weight": "bold", "color": "#E65100", "flex": 2, "align": "end"},
+                        ]
+                    },
+                    {
+                        "type": "box", "layout": "horizontal", "margin": "xs",
+                        "contents": [
+                            {"type": "text", "text": "ชำระเงิน", "size": "sm", "color": "#888888", "flex": 3},
+                            {"type": "text", "text": payment_label, "size": "sm", "flex": 2, "align": "end"},
+                        ]
+                    },
+                    {
+                        "type": "box", "layout": "horizontal", "margin": "xs",
+                        "contents": [
+                            {"type": "text", "text": "ที่อยู่", "size": "sm", "color": "#888888", "flex": 3},
+                            {"type": "text", "text": address, "size": "sm", "flex": 4, "wrap": True, "align": "end"},
+                        ]
+                    },
+                ]
+            },
+            "footer": {
+                "type": "box", "layout": "vertical", "paddingAll": "12px", "spacing": "sm",
+                "contents": [
+                    {
+                        "type": "button", "style": "primary", "color": "#E65100",
+                        "action": {"type": "uri", "label": "✅ ยืนยันออเดอร์", "uri": liff_url("merchant")}
+                    }
+                ]
+            }
+        }
+    }
+
+
 @app.post("/orders")
 async def create_order(order: Order):
-    """รับ notify จาก frontend หลัง insert Supabase แล้ว — ส่ง LINE push เท่านั้น"""
+    """รับ notify จาก frontend หลัง insert Supabase แล้ว
+    1. Push แจ้งลูกค้า (confirm receipt)
+    2. Push แจ้ง LINE ทุกคนที่มี role=merchant หรือ admin
+    """
     short_id = str(order.order_id or "")[-6:].upper() if order.order_id else "NEW"
 
-    await push_message(order.user_id, [
-        make_order_confirmed_flex({
-            "order_id":      short_id,
-            "items":         order.items,
-            "total_price":   order.total_price,
-            "payment_method": order.payment_method,
-            "address":       order.address,
+    order_data = {
+        "order_id":       short_id,
+        "items":          order.items,
+        "total_price":    order.total_price,
+        "payment_method": order.payment_method,
+        "address":        order.address,
+    }
+
+    # ── 1. แจ้งลูกค้า ────────────────────────────────────────────────
+    await push_message(order.user_id, [make_order_confirmed_flex(order_data)])
+
+    # ── 2. แจ้ง merchant/admin ทุกคน ────────────────────────────────
+    # ดึง line_user_id ของ merchant และ admin ทั้งหมดที่ is_active=true
+    if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        merchant_rows = await sb_get("users", {
+            "select":    "line_user_id",
+            "role":      "in.(merchant,admin)",
+            "is_active": "eq.true",
         })
-    ])
+        merchant_flex = make_new_order_merchant_flex(order_data)
+
+        # Push แบบ multicast ถ้ามีมากกว่า 1 คน (efficient กว่า)
+        merchant_ids = [r["line_user_id"] for r in (merchant_rows or []) if r.get("line_user_id")]
+        if merchant_ids:
+            await _multicast_message(merchant_ids, [merchant_flex])
+
     return {"status": "notified", "order_id": order.order_id}
 
 
