@@ -27,7 +27,16 @@ export function useRole(lineUserId) {
         }
         setLoading(false)
       })
-  }, [lineUserId])
+  }, [lineUserId]).then(({ data, error }) => {
+  if (!error && data) {
+    setRole(data.role || "customer")
+    setActive(data.is_active ?? true)
+  }
+  // ถ้า error (เช่น PGRST116 = no rows) → ใช้ default customer ไปก่อน
+  // ไม่ต้องแก้อะไรเพราะ default อยู่แล้ว แต่ log ไว้ดีกว่า
+  if (error) console.warn("useRole:", error.code, error.message)
+  setLoading(false)
+})
 
   return {
     role,

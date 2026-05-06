@@ -9,23 +9,47 @@ import { useRole } from "./hooks/useRole"
 
 export default function App() {
   const [screen, setScreen] = useState(null)
+  const [profileSaved, setProfileSaved] = useState(false)
+
   const { profile, liffObj, ready, error, isDev } = useLiff()
-  const { role, loading: roleLoading, isMerchant, isRider, isAdmin, isActive } = useRole(profile?.userId)
+
+  // ── บันทึก profile ลง Supabase ก่อน แล้วค่อยให้ useRole ทำงาน ──────
+  useEffect(() => {
+    if (!profile) return
+
+    if (isDev) {
+      setProfileSaved(true) // dev mode ข้ามได้เลย
+      return
+    }
+
+    const save = async () => {
+      const { error } = await supabase.from("users").upsert(
+        {
+          line_user_id: profile.userId,
+          display_name: profile.displayName,
+          picture_url:  profile.pictureUrl || null,
+          last_seen:    new Date().toISOString(),
+        },
+        { onConflict: "line_user_id" }
+      )
+      if (error) console.error("❌ upsert failed:", error.message)
+      else console.log("✅ user saved:", profile.userId)
+      setProfileSaved(true)
+    }
+
+    save()
+  }, [profile, isDev])
+
+  // ── ส่ง userId ให้ useRole ต่อเมื่อ upsert เสร็จแล้วเท่านั้น ────────
+  const { role, loading: roleLoading, isMerchant, isRider, isAdmin, isActive } = useRole(
+    profileSaved ? profile?.userId : null
+  )
 
   // ── Read ?mode= from URL ────────────────────────────────────────────
   useEffect(() => {
     const mode = new URLSearchParams(window.location.search).get("mode")
     if (["merchant", "order", "admin", "rider"].includes(mode)) setScreen(mode)
   }, [])
-
-  // ── บันทึก profile ลง Supabase (เฉพาะ production) ──────────────────
-  useEffect(() => {
-    if (!profile || isDev) return
-    supabase.from("users").upsert(
-      { line_user_id: profile.userId, display_name: profile.displayName, picture_url: profile.pictureUrl || null, last_seen: new Date().toISOString() },
-      { onConflict: "line_user_id" }
-    )
-  }, [profile, isDev])
 
   // ── Role gate ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -94,7 +118,6 @@ export default function App() {
   // ── Home ─────────────────────────────────────────────────────────────
   return (
     <div className="max-w-md mx-auto min-h-screen bg-blue-600 flex flex-col">
-      {/* Dev badge */}
       {isDev && (
         <div className="bg-yellow-400 text-yellow-900 text-xs font-bold text-center py-1 px-3">
           🛠️ DEV MODE — mock profile, ไม่ได้ต่อ LINE จริง
@@ -121,15 +144,14 @@ export default function App() {
           <div className="flex-1 min-w-0">
             <p className="text-blue-200 text-xs mb-0.5">สวัสดีครับ 👋</p>
             <h1 className="text-white text-xl font-bold truncate">{profile?.displayName || "ยินดีต้อนรับ"}</h1>
-            <span className="text-[11px] bg-white bg-opacity-20  px-2 py-0.5 rounded-full">{role}</span>
+            <span className="text-[11px] bg-white bg-opacity-20 px-2 py-0.5 rounded-full">{role}</span>
           </div>
         </div>
 
         <div className="relative z-10 mt-4 bg-white bg-opacity-15 rounded-2xl p-3.5 flex items-center gap-3 border border-white border-opacity-20">
           <div className="text-3xl">🎁</div>
           <div className="flex items-center-safe">
-            <p className=" font-bold text-sm">ฟรีค่าส่งวันนี้!</p>
-           
+            <p className="font-bold text-sm">ฟรีค่าส่งวันนี้!</p>
           </div>
           <div className="ml-auto text-white opacity-60">›</div>
         </div>
