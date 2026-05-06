@@ -254,15 +254,18 @@ def _quick_reply_items():
 
 
 # ── Rich Menu ───────────────────────────────────────────────────────
+# ── แทนที่ฟังก์ชัน ensure_rich_menu() เดิมทั้งหมดด้วยโค้ดนี้ ──────────
+
 def ensure_rich_menu():
     if not LINE_CHANNEL_ACCESS_TOKEN or not LIFF_ID:
         print("⚠️ ข้าม Rich Menu (ไม่มี token หรือ LIFF_ID)")
         return
 
-    headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}
+    headers              = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}
     current_order_url    = liff_url("order")
     current_merchant_url = liff_url("merchant")
 
+    # ── ตรวจว่ามี menu ที่ถูกต้องอยู่แล้วหรือไม่ ──────────────────────
     res   = httpx.get("https://api.line.me/v2/bot/richmenu/list", headers=headers)
     menus = res.json().get("richmenus", [])
 
@@ -274,10 +277,12 @@ def ensure_rich_menu():
                 print(f"✅ Rich Menu OK (ID: {menu['richMenuId']})")
                 return
 
+    # ── ลบ menu เก่าทั้งหมด ────────────────────────────────────────────
     print("🔄 สร้าง Rich Menu ใหม่...")
     for menu in menus:
         httpx.delete(f"https://api.line.me/v2/bot/richmenu/{menu['richMenuId']}", headers=headers)
 
+    # ── สร้าง menu structure ───────────────────────────────────────────
     payload = {
         "size": {"width": 2500, "height": 843},
         "selected": True,
@@ -294,18 +299,93 @@ def ensure_rich_menu():
         return
     rid = res.json()["richMenuId"]
 
-    image_path = os.path.join(BASE_DIR, "rich_menu.png")
-    if os.path.exists(image_path):
+    # ── Upload รูป (generate อัตโนมัติถ้าไม่มีไฟล์) ───────────────────
+    image_path = "rich_menu.png"
+    if not os.path.exists(image_path):
+        image_path = _generate_rich_menu_image(image_path)
+
+    if image_path and os.path.exists(image_path):
         with open(image_path, "rb") as f:
-            httpx.post(
+            img_res = httpx.post(
                 f"https://api-data.line.me/v2/bot/richmenu/{rid}/content",
                 headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "image/png"},
-                content=f.read()
+                content=f.read(),
+                timeout=30,
             )
+        if img_res.status_code == 200:
+            print("✅ Upload รูป Rich Menu สำเร็จ")
+        else:
+            print(f"⚠️ Upload รูปไม่สำเร็จ: {img_res.status_code} — menu ยังใช้งานได้แต่ไม่มีรูป")
+    else:
+        print("⚠️ ไม่มีรูป rich_menu.png และ generate ไม่สำเร็จ — menu จะไม่แสดงรูป")
 
+    # ── ผูก menu กับทุก user ───────────────────────────────────────────
     httpx.delete("https://api.line.me/v2/bot/user/all/richmenu", headers=headers)
     httpx.post(f"https://api.line.me/v2/bot/user/all/richmenu/{rid}", headers=headers)
     print(f"✅ Rich Menu พร้อม (ID: {rid})")
+
+
+def _generate_rich_menu_image(output_path: str) -> str | None:
+    """Generate rich menu PNG ด้วย Pillow — ไม่ต้องมีไฟล์รูปภาพ"""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        print("⚠️ ไม่มี Pillow — รัน: pip install Pillow")
+        return None
+
+    W, H = 2500, 843
+    img  = Image.new("RGB", (W, H), "#1565C0")
+    draw = ImageDraw.Draw(img)
+
+    # เส้นแบ่งกลาง
+    draw.rectangle([W // 2 - 2, 0, W // 2 + 2, H], fill="#0D47A1")
+
+    _draw_panel(draw, x=0,    w=W//2, label="🛍️  สั่งสินค้า",   sub="เลือกเมนู · ระบุที่อยู่ · ติดตาม", bg="#1E88E5")
+    _draw_panel(draw, x=W//2, w=W//2, label="🏪  หน้าร้านค้า", sub="ดูออเดอร์ · อัปเดตสถานะ",          bg="#3949AB")
+
+    img.save(output_path, "PNG")
+    print(f"✅ Generate {output_path} สำเร็จ")
+    return output_path
+
+
+def _draw_panel(draw, x: int, w: int, label: str, sub: str, bg: str):
+    """วาด panel ซ้าย/ขวาของ rich menu"""
+    from PIL import ImageFont
+
+    cx = x + w // 2
+
+    # พื้นหลัง
+    draw.rectangle([x, 0, x + w, 843], fill=bg)
+
+    # วงกลม decoration
+    draw.ellipse([cx - 300, 843//2 - 360, cx + 300, 843//2 + 240], fill="#ffffff15")
+
+    # โหลด font — fallback gracefully
+    def load_font(size, bold=False):
+        paths = [
+            f"/usr/share/fonts/truetype/dejavu/DejaVuSans{'-Bold' if bold else ''}.ttf",
+            f"/usr/share/fonts/truetype/liberation/LiberationSans{'-Bold' if bold else ''}.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        ]
+        for p in paths:
+            if os.path.exists(p):
+                return ImageFont.truetype(p, size)
+        return ImageFont.load_default()
+
+    font_big = load_font(130, bold=True)
+    font_sub = load_font(65)
+
+    # ข้อความหลัก
+    draw.text((cx, 843//2 - 60), label, font=font_big, anchor="mm", fill="#ffffff")
+
+    # ข้อความรอง
+    draw.text((cx, 843//2 + 110), sub, font=font_sub, anchor="mm", fill="#ffffffbb")
+
+    # ปุ่ม
+    bw, bh = 480, 85
+    bx, by = cx - bw//2, 843 - 145
+    draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=42, fill="#ffffff25")
+    draw.text((cx, by + bh//2), "แตะเพื่อเปิด", font=font_sub, anchor="mm", fill="#ffffff")
 
 
 # ── Models ──────────────────────────────────────────────────────────
