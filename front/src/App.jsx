@@ -60,7 +60,7 @@ export default function App() {
   }, [ready, roleLoading, screen, isMerchant, isRider, isAdmin])
 
   // ── Loading ─────────────────────────────────────────────────────────
-  if (!ready || roleLoading) return (
+  if (!ready || !profileSaved || roleLoading) return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-blue-50">
       <div className="relative w-16 h-16 mb-5">
         <div className="absolute inset-0 border-4 border-blue-100 rounded-full" />
