@@ -39,14 +39,21 @@ def sb_headers():
     }
 
 async def sb_get(table: str, params: dict = None):
-    """GET from Supabase REST API"""
+    """GET from Supabase REST API
+    ส่ง params เป็น key=value ตรงๆ — Supabase PostgREST ใช้ query param แบบ
+      role=in.(merchant,admin)   (ไม่ต้อง encode วงเล็บ)
+      is_active=eq.true
+    """
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         return []
-    query = "&".join(f"{k}={v}" for k, v in (params or {}).items())
-    url = f"{SUPABASE_URL}/rest/v1/{table}{'?' + query if query else ''}"
+    # ใช้ httpx params= แทนการต่อ string เอง เพื่อหลีกเลี่ยง double-encode
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
     async with httpx.AsyncClient() as c:
-        res = await c.get(url, headers=sb_headers())
-        return res.json() if res.status_code == 200 else []
+        res = await c.get(url, headers=sb_headers(), params=params or {})
+        if res.status_code != 200:
+            print(f"[sb_get] {table} → {res.status_code}: {res.text[:200]}")
+            return []
+        return res.json()
 
 async def sb_patch(table: str, match: dict, data: dict):
     """PATCH a row in Supabase"""
@@ -639,15 +646,21 @@ async def create_order(order: Order):
     if SUPABASE_URL and SUPABASE_SERVICE_KEY:
         merchant_rows = await sb_get("users", {
             "select":    "line_user_id",
-            "role":      "in.(merchant,admin)",
+            "role":      "in.(merchant,admin)",  # PostgREST syntax
             "is_active": "eq.true",
         })
-        merchant_flex = make_new_order_merchant_flex(order_data)
-
-        # Push แบบ multicast ถ้ามีมากกว่า 1 คน (efficient กว่า)
         merchant_ids = [r["line_user_id"] for r in (merchant_rows or []) if r.get("line_user_id")]
+        print(f"[order] notify merchants: {merchant_ids}")
+
         if merchant_ids:
-            await _multicast_message(merchant_ids, [merchant_flex])
+            merchant_flex = make_new_order_merchant_flex(order_data)
+            if len(merchant_ids) == 1:
+                # push_message รองรับทุก plan, multicast ต้องการ plan สูงกว่า
+                await push_message(merchant_ids[0], [merchant_flex])
+            else:
+                await _multicast_message(merchant_ids, [merchant_flex])
+        else:
+            print("[order] ⚠️ ไม่พบ merchant/admin ที่ active — ไม่มีการแจ้งเตือน")
 
     return {"status": "notified", "order_id": order.order_id}
 
