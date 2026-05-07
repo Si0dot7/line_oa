@@ -6,7 +6,7 @@ import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Union
 import json
 from dotenv import load_dotenv
 
@@ -39,19 +39,14 @@ def sb_headers():
     }
 
 async def sb_get(table: str, params: dict = None):
-    """GET from Supabase REST API
-    ส่ง params เป็น key=value ตรงๆ — Supabase PostgREST ใช้ query param แบบ
-      role=in.(merchant,admin)   (ไม่ต้อง encode วงเล็บ)
-      is_active=eq.true
-    """
+    """GET from Supabase REST API"""
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         return []
-    # ใช้ httpx params= แทนการต่อ string เอง เพื่อหลีกเลี่ยง double-encode
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     async with httpx.AsyncClient() as c:
         res = await c.get(url, headers=sb_headers(), params=params or {})
         if res.status_code != 200:
-            print(f"[sb_get] {table} → {res.status_code}: {res.text[:200]}")
+            print(f"[sb_get] {table} status={res.status_code}: {res.text[:200]}")
             return []
         return res.json()
 
@@ -417,7 +412,7 @@ def _draw_panel(draw, x: int, w: int, label: str, sub: str, bg: str):
 
 # ── Models ──────────────────────────────────────────────────────────
 class Order(BaseModel):
-    order_id:       Optional[str] = None
+    order_id:       Optional[Union[str, int]] = None
     user_id:        str
     items:          list[str]
     lat:            float
@@ -646,21 +641,19 @@ async def create_order(order: Order):
     if SUPABASE_URL and SUPABASE_SERVICE_KEY:
         merchant_rows = await sb_get("users", {
             "select":    "line_user_id",
-            "role":      "in.(merchant,admin)",  # PostgREST syntax
+            "role":      "in.(merchant,admin)",
             "is_active": "eq.true",
         })
         merchant_ids = [r["line_user_id"] for r in (merchant_rows or []) if r.get("line_user_id")]
         print(f"[order] notify merchants: {merchant_ids}")
-
-        if merchant_ids:
+        if not merchant_ids:
+            print("[order] no active merchant/admin found - check role and is_active in Supabase")
+        else:
             merchant_flex = make_new_order_merchant_flex(order_data)
             if len(merchant_ids) == 1:
-                # push_message รองรับทุก plan, multicast ต้องการ plan สูงกว่า
                 await push_message(merchant_ids[0], [merchant_flex])
             else:
                 await _multicast_message(merchant_ids, [merchant_flex])
-        else:
-            print("[order] ⚠️ ไม่พบ merchant/admin ที่ active — ไม่มีการแจ้งเตือน")
 
     return {"status": "notified", "order_id": order.order_id}
 
