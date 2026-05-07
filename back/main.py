@@ -42,14 +42,16 @@ async def sb_get(table: str, params: dict = None):
     """GET from Supabase REST API"""
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         return []
+    # ✅ build query string เองเพื่อป้องกัน httpx encode วงเล็บใน in.(x,y)
+    query_string = "&".join(f"{k}={v}" for k, v in (params or {}).items())
     url = f"{SUPABASE_URL}/rest/v1/{table}"
+    url_with_params = f"{url}?{query_string}" if query_string else url
     async with httpx.AsyncClient() as c:
-        res = await c.get(url, headers=sb_headers(), params=params or {})
+        res = await c.get(url_with_params, headers=sb_headers())
         if res.status_code != 200:
             print(f"[sb_get] {table} status={res.status_code}: {res.text[:200]}")
             return []
         return res.json()
-
 async def sb_patch(table: str, match: dict, data: dict):
     """PATCH a row in Supabase"""
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
@@ -639,9 +641,10 @@ async def create_order(order: Order):
     # ── 2. แจ้ง merchant/admin ทุกคน ────────────────────────────────
     # ดึง line_user_id ของ merchant และ admin ทั้งหมดที่ is_active=true
     if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+        # ✅ แก้เป็นแบบนี้
         merchant_rows = await sb_get("users", {
             "select":    "line_user_id",
-            "role":      "in.(merchant,admin)",
+            "role":      "in.(merchant,admin)",   # ต้องใช้ key ว่า "role" แต่ sb_get ต้อง pass ให้ถูก
             "is_active": "eq.true",
         })
         merchant_ids = [r["line_user_id"] for r in (merchant_rows or []) if r.get("line_user_id")]
